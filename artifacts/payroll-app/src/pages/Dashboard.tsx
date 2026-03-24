@@ -1,190 +1,133 @@
 import { useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
-import { MonthSwitcher } from "@/components/MonthSwitcher";
-import { EmployeePayrollDetail } from "@/components/EmployeePayrollDetail";
-import { EmployeeInfoDetail } from "@/components/EmployeeInfoDetail";
-import { DUMMY_EMPLOYEE_DATA, DUMMY_PAYROLL_DATA } from "@/lib/dummy-data";
-import { motion, AnimatePresence } from "framer-motion";
+import { calculateIncomeTax, calcEffectiveRate } from "@/lib/taxCalculator";
 import { cn } from "@/lib/utils";
-import { ChevronRight } from "lucide-react";
+import { Calculator, Info } from "lucide-react";
 
-type TabType = "payroll" | "info";
+function formatJPY(amount: number): string {
+  return new Intl.NumberFormat("ja-JP", {
+    style: "currency",
+    currency: "JPY",
+    maximumFractionDigits: 0,
+  }).format(amount);
+}
+
+function formatInputDisplay(raw: string): string {
+  const digits = raw.replace(/[^0-9]/g, "");
+  if (!digits) return "";
+  return parseInt(digits, 10).toLocaleString("ja-JP");
+}
 
 export default function Dashboard() {
-  const [currentDate, setCurrentDate] = useState(new Date(2026, 2, 1));
-  const [selectedEmployeeId, setSelectedEmployeeId] = useState<string>(DUMMY_EMPLOYEE_DATA[0].id);
-  const [activeTab, setActiveTab] = useState<TabType>("payroll");
+  const [inputValue, setInputValue] = useState<string>("");
 
-  const selectedEmployee = DUMMY_EMPLOYEE_DATA.find((e) => e.id === selectedEmployeeId)!;
-  const selectedPayroll = DUMMY_PAYROLL_DATA.find((p) => p.employeeId === selectedEmployeeId);
+  const rawDigits = inputValue.replace(/[^0-9]/g, "");
+  const monthlySalary = rawDigits ? parseInt(rawDigits, 10) : 0;
+  const incomeTax = calculateIncomeTax(monthlySalary);
+  const effectiveRate = calcEffectiveRate(monthlySalary);
+  const hasValue = monthlySalary > 0;
+
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const digits = e.target.value.replace(/[^0-9]/g, "");
+    setInputValue(digits ? formatInputDisplay(digits) : "");
+  };
 
   return (
     <AppLayout>
-      <div className="flex flex-col h-full">
-        {/* Month Switcher */}
-        <div className="px-4 pt-4 pb-2 sm:px-6">
-          <MonthSwitcher currentDate={currentDate} onChange={setCurrentDate} />
-        </div>
+      <div className="flex items-center justify-center min-h-full px-4 py-12">
+        <div className="w-full max-w-md">
 
-        {/* Mobile: Horizontal employee selector */}
-        <div className="md:hidden px-4 pb-3 overflow-x-auto scrollbar-hide">
-          <div className="flex gap-2 pb-1">
-            {DUMMY_EMPLOYEE_DATA.map((emp) => (
-              <button
-                key={emp.id}
-                onClick={() => setSelectedEmployeeId(emp.id)}
-                className={cn(
-                  "flex-shrink-0 flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium border transition-all duration-200",
-                  selectedEmployeeId === emp.id
-                    ? "bg-primary text-primary-foreground border-primary shadow-md shadow-primary/20"
-                    : "bg-card text-foreground border-border hover:border-primary/40 hover:bg-secondary"
-                )}
-              >
-                <div className={cn(
-                  "w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold",
-                  selectedEmployeeId === emp.id
-                    ? "bg-white/20 text-white"
-                    : "bg-secondary text-foreground"
-                )}>
-                  {emp.name.substring(0, 1)}
-                </div>
-                {emp.name}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Main layout: sidebar + detail */}
-        <div className="flex flex-1 overflow-hidden gap-0">
-          
-          {/* Desktop: Left employee selector panel */}
-          <div className="hidden md:flex flex-col w-56 lg:w-64 border-r border-border bg-card/50 flex-shrink-0 overflow-y-auto">
-            <div className="px-4 py-3 border-b border-border/50">
-              <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">従業員一覧</h2>
+          {/* Header */}
+          <div className="flex items-center gap-3 mb-8">
+            <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+              <Calculator className="w-5 h-5 text-primary" />
             </div>
-            <nav className="flex-1 py-3 px-2 space-y-1">
-              {DUMMY_EMPLOYEE_DATA.map((emp) => (
-                <button
-                  key={emp.id}
-                  onClick={() => setSelectedEmployeeId(emp.id)}
+            <div>
+              <h1 className="text-xl font-bold text-foreground">所得税シミュレーター</h1>
+              <p className="text-xs text-muted-foreground mt-0.5">甲欄・扶養親族0人（令和6年分）</p>
+            </div>
+          </div>
+
+          {/* Input Card */}
+          <div className="bg-card border border-border rounded-2xl p-6 shadow-sm space-y-6">
+
+            {/* Monthly Salary Input */}
+            <div className="space-y-2">
+              <label className="block text-sm font-semibold text-foreground">
+                月給（円）
+              </label>
+              <p className="text-xs text-muted-foreground">社会保険料控除前の総支給額を入力してください</p>
+              <div className="relative mt-1">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-semibold select-none">
+                  ¥
+                </span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={inputValue}
+                  onChange={handleChange}
+                  placeholder="300,000"
                   className={cn(
-                    "w-full flex items-center gap-3 px-3 py-3 rounded-xl text-sm font-medium transition-all duration-200 text-left group",
-                    selectedEmployeeId === emp.id
-                      ? "bg-primary/10 text-primary"
-                      : "text-foreground hover:bg-secondary hover:text-foreground"
+                    "w-full pl-8 pr-4 py-3.5 rounded-xl border bg-background text-foreground text-base font-medium",
+                    "focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all",
+                    "placeholder:text-muted-foreground/40",
+                    hasValue ? "border-primary/30" : "border-border"
                   )}
-                >
-                  <div className={cn(
-                    "w-9 h-9 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0 border transition-colors",
-                    selectedEmployeeId === emp.id
-                      ? "bg-primary/20 text-primary border-primary/30"
-                      : "bg-secondary text-foreground/70 border-border group-hover:border-primary/20"
-                  )}>
-                    {emp.name.substring(0, 1)}
+                />
+              </div>
+            </div>
+
+            {/* Divider */}
+            <div className="border-t border-border/60" />
+
+            {/* Result Area */}
+            <div className="space-y-2">
+              <label className="block text-sm font-semibold text-foreground">
+                源泉徴収税額（月額）
+              </label>
+              <p className="text-xs text-muted-foreground">入力値から自動計算されます</p>
+              <div className={cn(
+                "w-full px-4 py-3.5 rounded-xl border bg-background/50 transition-all",
+                hasValue && incomeTax > 0
+                  ? "border-primary/20 bg-primary/3"
+                  : "border-border/50"
+              )}>
+                <span className={cn(
+                  "text-2xl font-bold tabular-nums tracking-tight transition-colors",
+                  hasValue && incomeTax > 0 ? "text-primary" : "text-muted-foreground/50"
+                )}>
+                  {hasValue ? formatJPY(incomeTax) : "¥ —"}
+                </span>
+              </div>
+
+              {/* Effective rate + breakdown */}
+              {hasValue && (
+                <div className="pt-1 space-y-2">
+                  <div className="flex items-center justify-between text-xs text-muted-foreground px-1">
+                    <span>実効税率</span>
+                    <span className="font-semibold text-foreground tabular-nums">
+                      {effectiveRate.toFixed(2)} %
+                    </span>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <p className={cn(
-                      "font-semibold truncate text-sm",
-                      selectedEmployeeId === emp.id ? "text-primary" : "text-foreground"
-                    )}>
-                      {emp.name}
+                  {monthlySalary < 88_000 && (
+                    <p className="text-xs text-muted-foreground px-1">
+                      月額 88,000 円未満のため源泉徴収なし
                     </p>
-                    <p className="text-xs text-muted-foreground truncate mt-0.5">{emp.department}</p>
-                  </div>
-                  {selectedEmployeeId === emp.id && (
-                    <ChevronRight className="w-4 h-4 text-primary flex-shrink-0" />
                   )}
-                </button>
-              ))}
-            </nav>
-          </div>
-
-          {/* Right detail area */}
-          <div className="flex-1 overflow-y-auto">
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={selectedEmployeeId}
-                initial={{ opacity: 0, x: 10 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: -10 }}
-                transition={{ duration: 0.2 }}
-                className="h-full"
-              >
-                <div className="px-4 py-4 sm:px-6 lg:px-8 max-w-4xl mx-auto pb-16">
-                  
-                  {/* Employee Header */}
-                  <div className="flex items-center gap-4 mb-6">
-                    <div className="w-12 h-12 rounded-full bg-gradient-to-br from-primary/20 to-indigo-100 text-primary flex items-center justify-center font-bold text-xl border border-primary/20 shadow-inner flex-shrink-0">
-                      {selectedEmployee.name.substring(0, 1)}
-                    </div>
-                    <div>
-                      <h2 className="text-xl font-bold text-foreground">{selectedEmployee.name}</h2>
-                      <p className="text-sm text-muted-foreground">
-                        {selectedEmployee.employeeNumber} &middot; {selectedEmployee.department} &middot; {selectedEmployee.position}
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Tab Switcher */}
-                  <div className="inline-flex bg-secondary/80 p-1 rounded-2xl shadow-inner border border-border/50 mb-6">
-                    <button
-                      onClick={() => setActiveTab("payroll")}
-                      className={cn(
-                        "relative px-6 sm:px-8 py-2.5 text-sm font-semibold rounded-xl transition-colors z-10",
-                        activeTab === "payroll" ? "text-primary-foreground" : "text-muted-foreground hover:text-foreground"
-                      )}
-                    >
-                      {activeTab === "payroll" && (
-                        <motion.div
-                          layoutId="detailTab"
-                          className="absolute inset-0 bg-primary rounded-xl shadow-md"
-                          transition={{ type: "spring", bounce: 0.2, duration: 0.5 }}
-                        />
-                      )}
-                      <span className="relative z-20">給与情報</span>
-                    </button>
-                    <button
-                      onClick={() => setActiveTab("info")}
-                      className={cn(
-                        "relative px-6 sm:px-8 py-2.5 text-sm font-semibold rounded-xl transition-colors z-10",
-                        activeTab === "info" ? "text-primary-foreground" : "text-muted-foreground hover:text-foreground"
-                      )}
-                    >
-                      {activeTab === "info" && (
-                        <motion.div
-                          layoutId="detailTab"
-                          className="absolute inset-0 bg-primary rounded-xl shadow-md"
-                          transition={{ type: "spring", bounce: 0.2, duration: 0.5 }}
-                        />
-                      )}
-                      <span className="relative z-20">社員情報</span>
-                    </button>
-                  </div>
-
-                  {/* Tab Content */}
-                  <AnimatePresence mode="wait">
-                    <motion.div
-                      key={activeTab}
-                      initial={{ opacity: 0, y: 8 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -8 }}
-                      transition={{ duration: 0.2 }}
-                    >
-                      {activeTab === "payroll" ? (
-                        <EmployeePayrollDetail
-                          payroll={selectedPayroll}
-                          currentDate={currentDate}
-                        />
-                      ) : (
-                        <EmployeeInfoDetail employee={selectedEmployee} />
-                      )}
-                    </motion.div>
-                  </AnimatePresence>
-
                 </div>
-              </motion.div>
-            </AnimatePresence>
+              )}
+            </div>
           </div>
+
+          {/* Note */}
+          <div className="flex items-start gap-2.5 mt-4 px-1 text-xs text-muted-foreground">
+            <Info className="w-4 h-4 flex-shrink-0 mt-0.5 text-primary/40" />
+            <p>
+              本計算は国税庁「給与所得の源泉徴収税額表（月額表）」電算機計算の特例に基づく甲欄・扶養親族0人の簡易計算です。
+              社会保険料・住民税・各種控除は含まれておらず、実際の控除額と異なる場合があります。
+            </p>
+          </div>
+
         </div>
       </div>
     </AppLayout>
