@@ -12,7 +12,7 @@ export function MonthSwitcher({ currentDate, onChange }: MonthSwitcherProps) {
   const handleNext = () => onChange(addMonths(currentDate, 1));
 
   return (
-    <div className="flex items-center justify-center py-6 px-4">
+    <div className="flex items-center justify-center py-2 px-4">
       <div className="inline-flex items-center bg-card rounded-2xl shadow-sm border border-border/60 p-1">
         <button 
           onClick={handlePrev}
