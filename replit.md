@@ -21,7 +21,8 @@ pnpm workspace monorepo using TypeScript. Each package manages its own dependenc
 ```text
 artifacts-monorepo/
 ├── artifacts/              # Deployable applications
-│   └── api-server/         # Express API server
+│   ├── api-server/         # Express API server
+│   └── payroll-app/        # 給与管理システム (React + Vite, previewPath: /)
 ├── lib/                    # Shared libraries
 │   ├── api-spec/           # OpenAPI spec + Orval codegen config
 │   ├── api-client-react/   # Generated React Query hooks

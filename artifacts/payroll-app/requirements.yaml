@@ -1,0 +1,11 @@
+packages:
+  "framer-motion": "For smooth tab transitions, list animations, and interactive feedback"
+  "clsx": "Utility for constructing className strings conditionally"
+  "tailwind-merge": "Utility function to efficiently merge Tailwind CSS classes"
+  "date-fns": "For formatting and manipulating dates"
+  "@radix-ui/react-slot": "Required for some shadcn-like polymorphic components"
+
+notes:
+  - Using framer-motion for high-quality micro-interactions suitable for a premium BtoB SaaS
+  - Implementation relies entirely on dummy data as requested for the prototype phase
+  - Created mock hooks that simulate network requests to maintain a production-ready architecture
