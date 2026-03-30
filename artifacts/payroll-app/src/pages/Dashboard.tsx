@@ -1,11 +1,24 @@
 import { useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { MonthSwitcher } from "@/components/MonthSwitcher";
-import { DUMMY_EMPLOYEE_DATA } from "@/lib/dummy-data";
+import { DUMMY_EMPLOYEE_DATA, EmployeeRecord } from "@/lib/dummy-data";
 import { calculateIncomeTax, calcEffectiveRate } from "@/lib/taxCalculator";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
-import { Calculator, ChevronRight, Info, User } from "lucide-react";
+import { Calculator, ChevronRight, Info, User, Plus, Users } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogClose,
+} from "@/components/ui/dialog";
+import {
+  Sheet,
+  SheetContent,
+  SheetTitle,
+} from "@/components/ui/sheet";
 
 // ─────────────────────────────────────────────
 // Utility
@@ -22,6 +35,11 @@ function formatJPY(amount: number): string {
 function toDisplayValue(digits: string): string {
   if (!digits) return "";
   return parseInt(digits, 10).toLocaleString("ja-JP");
+}
+
+function todayJP(): string {
+  const d = new Date();
+  return `${d.getFullYear()}年${String(d.getMonth() + 1).padStart(2, "0")}月${String(d.getDate()).padStart(2, "0")}日`;
 }
 
 // ─────────────────────────────────────────────
@@ -45,7 +63,6 @@ function TaxCalculatorForm() {
 
   return (
     <div className="space-y-6 max-w-md">
-      {/* Section title */}
       <div className="flex items-center gap-2.5">
         <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
           <Calculator className="w-4 h-4 text-primary" />
@@ -56,10 +73,7 @@ function TaxCalculatorForm() {
         </div>
       </div>
 
-      {/* Card */}
       <div className="bg-card border border-border rounded-2xl p-6 shadow-sm space-y-6">
-
-        {/* Input */}
         <div className="space-y-1.5">
           <label className="block text-sm font-semibold text-foreground">月給（円）</label>
           <p className="text-xs text-muted-foreground">社会保険料控除前の総支給額を入力してください</p>
@@ -83,7 +97,6 @@ function TaxCalculatorForm() {
 
         <div className="border-t border-border/60" />
 
-        {/* Result */}
         <div className="space-y-1.5">
           <label className="block text-sm font-semibold text-foreground">源泉徴収税額（月額）</label>
           <p className="text-xs text-muted-foreground">入力値から自動計算されます</p>
@@ -98,7 +111,6 @@ function TaxCalculatorForm() {
               {hasValue ? formatJPY(incomeTax) : "¥ —"}
             </span>
           </div>
-
           {hasValue && (
             <div className="pt-1 space-y-1">
               <div className="flex items-center justify-between text-xs text-muted-foreground px-1">
@@ -113,7 +125,6 @@ function TaxCalculatorForm() {
         </div>
       </div>
 
-      {/* Disclaimer */}
       <div className="flex items-start gap-2 text-xs text-muted-foreground">
         <Info className="w-4 h-4 flex-shrink-0 mt-0.5 text-primary/40" />
         <p>
@@ -142,6 +153,80 @@ function EmployeeInfoPlaceholder() {
 }
 
 // ─────────────────────────────────────────────
+// 従業員サイドバー（PC・モバイル共用コンテンツ）
+// ─────────────────────────────────────────────
+
+interface EmployeeSidebarProps {
+  employees: EmployeeRecord[];
+  selectedId: string;
+  onSelect: (id: string) => void;
+  onAddClick: () => void;
+  onAfterSelect?: () => void;
+}
+
+function EmployeeSidebarContent({
+  employees,
+  selectedId,
+  onSelect,
+  onAddClick,
+  onAfterSelect,
+}: EmployeeSidebarProps) {
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header row */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border/50 flex-shrink-0">
+        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">従業員一覧</p>
+        <button
+          onClick={onAddClick}
+          className="w-7 h-7 flex items-center justify-center rounded-lg bg-primary/10 hover:bg-primary/20 text-primary transition-colors"
+          title="従業員を追加"
+        >
+          <Plus className="w-4 h-4" />
+        </button>
+      </div>
+
+      {/* Employee list */}
+      <nav className="flex-1 overflow-y-auto py-2 px-2 space-y-0.5">
+        {employees.map((emp) => {
+          const isSelected = emp.id === selectedId;
+          return (
+            <button
+              key={emp.id}
+              onClick={() => {
+                onSelect(emp.id);
+                onAfterSelect?.();
+              }}
+              className={cn(
+                "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 text-left group",
+                isSelected
+                  ? "bg-primary/10 text-primary"
+                  : "text-foreground hover:bg-secondary"
+              )}
+            >
+              <div className={cn(
+                "w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0 border transition-colors",
+                isSelected
+                  ? "bg-primary/20 text-primary border-primary/30"
+                  : "bg-secondary text-foreground/70 border-border"
+              )}>
+                {emp.name[0]}
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className={cn("font-semibold truncate text-sm", isSelected ? "text-primary" : "text-foreground")}>
+                  {emp.name}
+                </p>
+                <p className="text-xs text-muted-foreground truncate">{emp.department}</p>
+              </div>
+              {isSelected && <ChevronRight className="w-4 h-4 text-primary flex-shrink-0" />}
+            </button>
+          );
+        })}
+      </nav>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
 // メインページ
 // ─────────────────────────────────────────────
 
@@ -149,14 +234,65 @@ type TabType = "payroll" | "info";
 
 export default function Dashboard() {
   const [currentDate, setCurrentDate] = useState(new Date(2026, 2, 1));
+  const [employees, setEmployees] = useState<EmployeeRecord[]>(DUMMY_EMPLOYEE_DATA);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState(DUMMY_EMPLOYEE_DATA[0].id);
   const [activeTab, setActiveTab] = useState<TabType>("payroll");
 
-  const selectedEmployee = DUMMY_EMPLOYEE_DATA.find((e) => e.id === selectedEmployeeId)!;
+  // Mobile sheet state
+  const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
+
+  // Add employee dialog state
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newDepartment, setNewDepartment] = useState("");
+  const [newPosition, setNewPosition] = useState("");
+
+  const selectedEmployee = employees.find((e) => e.id === selectedEmployeeId) ?? employees[0];
 
   const handleSelectEmployee = (id: string) => {
     setSelectedEmployeeId(id);
     setActiveTab("payroll");
+  };
+
+  const handleOpenAddDialog = () => {
+    setNewName("");
+    setNewDepartment("");
+    setNewPosition("");
+    setAddDialogOpen(true);
+  };
+
+  const handleAddEmployee = () => {
+    if (!newName.trim()) return;
+
+    // Generate next EMP number based on current list
+    const maxNum = employees.reduce((max, emp) => {
+      const num = parseInt(emp.employeeNumber.replace("EMP", ""), 10);
+      return isNaN(num) ? max : Math.max(max, num);
+    }, 0);
+    const empNumber = `EMP${String(maxNum + 1).padStart(3, "0")}`;
+    const newId = `e_${Date.now()}`;
+
+    const newEmployee: EmployeeRecord = {
+      id: newId,
+      employeeNumber: empNumber,
+      name: newName.trim(),
+      department: newDepartment.trim() || "未設定",
+      position: newPosition.trim() || "未設定",
+      joinDate: todayJP(),
+      status: "在籍中",
+    };
+
+    setEmployees((prev) => [...prev, newEmployee]);
+    setSelectedEmployeeId(newId);
+    setActiveTab("payroll");
+    setAddDialogOpen(false);
+  };
+
+  const sidebarProps: EmployeeSidebarProps = {
+    employees,
+    selectedId: selectedEmployeeId,
+    onSelect: handleSelectEmployee,
+    onAddClick: handleOpenAddDialog,
   };
 
   return (
@@ -168,76 +304,28 @@ export default function Dashboard() {
           <MonthSwitcher currentDate={currentDate} onChange={setCurrentDate} />
         </div>
 
-        {/* ── モバイル: 横スクロール従業員ボタン ── */}
-        <div className="md:hidden px-4 pb-3 overflow-x-auto flex-shrink-0" style={{ scrollbarWidth: "none" }}>
-          <div className="flex gap-2 pb-1">
-            {DUMMY_EMPLOYEE_DATA.map((emp) => {
-              const isSelected = emp.id === selectedEmployeeId;
-              return (
-                <button
-                  key={emp.id}
-                  onClick={() => handleSelectEmployee(emp.id)}
-                  className={cn(
-                    "flex-shrink-0 flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-medium border transition-all duration-200",
-                    isSelected
-                      ? "bg-primary text-primary-foreground border-primary shadow-md shadow-primary/20"
-                      : "bg-card text-foreground border-border hover:border-primary/40 hover:bg-secondary"
-                  )}
-                >
-                  <div className={cn(
-                    "w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold",
-                    isSelected ? "bg-white/20 text-white" : "bg-secondary text-foreground"
-                  )}>
-                    {emp.name[0]}
-                  </div>
-                  {emp.name}
-                </button>
-              );
-            })}
-          </div>
+        {/* ── モバイル: 従業員リスト Sheetトリガー ── */}
+        <div className="md:hidden px-4 pb-3 flex-shrink-0">
+          <button
+            onClick={() => setMobileSheetOpen(true)}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl border border-border bg-card text-sm font-medium text-foreground hover:bg-secondary transition-colors w-full"
+          >
+            <Users className="w-4 h-4 text-muted-foreground" />
+            <span className="flex-1 text-left">
+              {selectedEmployee ? selectedEmployee.name : "従業員を選択"}
+            </span>
+            <span className="text-xs text-muted-foreground bg-secondary px-2 py-0.5 rounded-full">
+              {employees.length}名
+            </span>
+          </button>
         </div>
 
         {/* ── メインエリア（サイドバー + 詳細） ── */}
         <div className="flex flex-1 overflow-hidden border-t border-border/40">
 
-          {/* デスクトップ用: 従業員サイドバー */}
-          <aside className="hidden md:flex flex-col w-56 lg:w-64 border-r border-border flex-shrink-0 bg-card/40 overflow-y-auto">
-            <div className="px-4 py-3 border-b border-border/50">
-              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">従業員一覧</p>
-            </div>
-            <nav className="flex-1 py-2 px-2 space-y-0.5">
-              {DUMMY_EMPLOYEE_DATA.map((emp) => {
-                const isSelected = emp.id === selectedEmployeeId;
-                return (
-                  <button
-                    key={emp.id}
-                    onClick={() => handleSelectEmployee(emp.id)}
-                    className={cn(
-                      "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 text-left group",
-                      isSelected
-                        ? "bg-primary/10 text-primary"
-                        : "text-foreground hover:bg-secondary"
-                    )}
-                  >
-                    <div className={cn(
-                      "w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0 border transition-colors",
-                      isSelected
-                        ? "bg-primary/20 text-primary border-primary/30"
-                        : "bg-secondary text-foreground/70 border-border"
-                    )}>
-                      {emp.name[0]}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className={cn("font-semibold truncate text-sm", isSelected ? "text-primary" : "text-foreground")}>
-                        {emp.name}
-                      </p>
-                      <p className="text-xs text-muted-foreground truncate">{emp.department}</p>
-                    </div>
-                    {isSelected && <ChevronRight className="w-4 h-4 text-primary flex-shrink-0" />}
-                  </button>
-                );
-              })}
-            </nav>
+          {/* デスクトップ: 従業員縦サイドバー（常時表示） */}
+          <aside className="hidden md:flex flex-col w-56 lg:w-64 border-r border-border flex-shrink-0 bg-card/40">
+            <EmployeeSidebarContent {...sidebarProps} />
           </aside>
 
           {/* 詳細エリア */}
@@ -311,9 +399,90 @@ export default function Dashboard() {
               </motion.div>
             </AnimatePresence>
           </div>
-
         </div>
       </div>
+
+      {/* ── モバイル: 従業員リスト Sheet ── */}
+      <Sheet open={mobileSheetOpen} onOpenChange={setMobileSheetOpen}>
+        <SheetContent side="left" className="w-72 p-0 flex flex-col">
+          {/* SheetTitle は accessibility 用（非表示） */}
+          <SheetTitle className="sr-only">従業員一覧</SheetTitle>
+          <div className="flex-1 overflow-hidden flex flex-col pt-8">
+            <EmployeeSidebarContent
+              {...sidebarProps}
+              onAfterSelect={() => setMobileSheetOpen(false)}
+            />
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      {/* ── 従業員追加 Dialog ── */}
+      <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>従業員を追加</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-foreground" htmlFor="new-name">
+                名前 <span className="text-destructive">*</span>
+              </label>
+              <input
+                id="new-name"
+                type="text"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="例：山田 太郎"
+                className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all placeholder:text-muted-foreground/40"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-foreground" htmlFor="new-dept">
+                部署
+              </label>
+              <input
+                id="new-dept"
+                type="text"
+                value={newDepartment}
+                onChange={(e) => setNewDepartment(e.target.value)}
+                placeholder="例：営業部"
+                className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all placeholder:text-muted-foreground/40"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-foreground" htmlFor="new-pos">
+                役職
+              </label>
+              <input
+                id="new-pos"
+                type="text"
+                value={newPosition}
+                onChange={(e) => setNewPosition(e.target.value)}
+                placeholder="例：主任"
+                className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all placeholder:text-muted-foreground/40"
+              />
+            </div>
+          </div>
+
+          <DialogFooter className="gap-2 mt-2">
+            <DialogClose asChild>
+              <button className="px-4 py-2 rounded-xl border border-border text-sm font-medium text-foreground hover:bg-secondary transition-colors">
+                キャンセル
+              </button>
+            </DialogClose>
+            <button
+              onClick={handleAddEmployee}
+              disabled={!newName.trim()}
+              className="px-5 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              追加
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </AppLayout>
   );
 }
