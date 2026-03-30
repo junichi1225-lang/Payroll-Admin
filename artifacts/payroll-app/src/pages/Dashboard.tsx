@@ -173,20 +173,13 @@ function EmployeeSidebarContent({
 }: EmployeeSidebarProps) {
   return (
     <div className="flex flex-col h-full">
-      {/* Header row */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border/50 flex-shrink-0">
+      {/* Header */}
+      <div className="px-4 py-3 border-b border-border/50 flex-shrink-0">
         <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">従業員一覧</p>
-        <button
-          onClick={onAddClick}
-          className="w-7 h-7 flex items-center justify-center rounded-lg bg-primary/10 hover:bg-primary/20 text-primary transition-colors"
-          title="従業員を追加"
-        >
-          <Plus className="w-4 h-4" />
-        </button>
       </div>
 
-      {/* Employee list */}
-      <nav className="flex-1 overflow-y-auto py-2 px-2 space-y-0.5">
+      {/* Employee list — pr-0 で右端にブリードさせる */}
+      <nav className="flex-1 overflow-y-auto py-2 pl-2 pr-0 space-y-0.5">
         {employees.map((emp) => {
           const isSelected = emp.id === selectedId;
           return (
@@ -197,30 +190,41 @@ function EmployeeSidebarContent({
                 onAfterSelect?.();
               }}
               className={cn(
-                "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-150 text-left group",
+                "w-full flex items-center gap-3 py-2.5 text-sm transition-all duration-150 text-left border-l-4",
                 isSelected
-                  ? "bg-primary/10 text-primary"
-                  : "text-foreground hover:bg-secondary"
+                  // アクティブ: 右丸なし・右に1pxブリードでサイドバーのborder-rを消す
+                  ? "rounded-l-xl rounded-r-none bg-background text-primary border-primary font-bold pl-2 pr-3 mr-[-1px] shadow-sm"
+                  : "rounded-lg text-foreground border-transparent hover:bg-muted/40 pl-2 pr-3"
               )}
             >
               <div className={cn(
                 "w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0 border transition-colors",
                 isSelected
                   ? "bg-primary/20 text-primary border-primary/30"
-                  : "bg-secondary text-foreground/70 border-border"
+                  : "bg-background/60 text-foreground/70 border-border"
               )}>
                 {emp.name[0]}
               </div>
               <div className="flex-1 min-w-0">
-                <p className={cn("font-semibold truncate text-sm", isSelected ? "text-primary" : "text-foreground")}>
+                <p className={cn("truncate text-sm", isSelected ? "font-bold text-primary" : "font-medium text-foreground")}>
                   {emp.name}
                 </p>
                 <p className="text-xs text-muted-foreground truncate">{emp.department}</p>
               </div>
-              {isSelected && <ChevronRight className="w-4 h-4 text-primary flex-shrink-0" />}
             </button>
           );
         })}
+
+        {/* 従業員追加ボタン — リスト末尾に配置 */}
+        <button
+          onClick={onAddClick}
+          className="w-full flex items-center gap-2.5 pl-2 pr-3 py-2.5 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-all duration-150 border-l-4 border-transparent mt-1"
+        >
+          <div className="w-8 h-8 rounded-full flex items-center justify-center bg-background/60 border border-dashed border-border flex-shrink-0">
+            <Plus className="w-4 h-4" />
+          </div>
+          <span>従業員を追加</span>
+        </button>
       </nav>
     </div>
   );
@@ -324,7 +328,7 @@ export default function Dashboard() {
         <div className="flex flex-1 overflow-hidden border-t border-border/40">
 
           {/* デスクトップ: 従業員縦サイドバー（常時表示） */}
-          <aside className="hidden md:flex flex-col w-56 lg:w-64 border-r border-border flex-shrink-0 bg-card/40">
+          <aside className="hidden md:flex flex-col w-56 lg:w-64 border-r border-border flex-shrink-0 bg-muted/40">
             <EmployeeSidebarContent {...sidebarProps} />
           </aside>
 
