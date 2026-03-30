@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { MonthSwitcher } from "@/components/MonthSwitcher";
-import { DUMMY_EMPLOYEE_DATA, EmployeeRecord } from "@/lib/dummy-data";
+import { DUMMY_EMPLOYEE_DATA, EmployeeRecord, EmployeeColor } from "@/lib/dummy-data";
 import { calculateIncomeTax, calcEffectiveRate } from "@/lib/taxCalculator";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
-import { Calculator, ChevronRight, Info, User, Plus, Users } from "lucide-react";
+import { Calculator, Info, User, Plus, Users } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -19,6 +19,29 @@ import {
   SheetContent,
   SheetTitle,
 } from "@/components/ui/sheet";
+
+// ─────────────────────────────────────────────
+// カラーパレット（Tailwind JIT対策でinline styleで使用）
+// ─────────────────────────────────────────────
+
+const COLOR_PALETTE: EmployeeColor[] = ["blue", "green", "rose", "amber", "purple", "teal"];
+
+type ColorTokens = {
+  border: string;
+  bg50: string;
+  bg100: string;
+  text: string;
+  avatar: string;
+};
+
+const COLOR_MAP: Record<EmployeeColor, ColorTokens> = {
+  blue:   { border: "#3b82f6", bg50: "#eff6ff", bg100: "#dbeafe", text: "#2563eb", avatar: "#bfdbfe" },
+  green:  { border: "#22c55e", bg50: "#f0fdf4", bg100: "#dcfce7", text: "#16a34a", avatar: "#bbf7d0" },
+  rose:   { border: "#f43f5e", bg50: "#fff1f2", bg100: "#ffe4e6", text: "#e11d48", avatar: "#fecdd3" },
+  amber:  { border: "#f59e0b", bg50: "#fffbeb", bg100: "#fef3c7", text: "#d97706", avatar: "#fde68a" },
+  purple: { border: "#a855f7", bg50: "#faf5ff", bg100: "#f3e8ff", text: "#9333ea", avatar: "#e9d5ff" },
+  teal:   { border: "#14b8a6", bg50: "#f0fdfa", bg100: "#ccfbf1", text: "#0d9488", avatar: "#99f6e4" },
+};
 
 // ─────────────────────────────────────────────
 // Utility
@@ -164,6 +187,66 @@ interface EmployeeSidebarProps {
   onAfterSelect?: () => void;
 }
 
+// 各タブ項目: hoverをローカルstateで追跡してinline styleに渡す
+function EmployeeTabButton({
+  emp,
+  isSelected,
+  onSelect,
+  onAfterSelect,
+}: {
+  emp: EmployeeRecord;
+  isSelected: boolean;
+  onSelect: (id: string) => void;
+  onAfterSelect?: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const c = COLOR_MAP[emp.color];
+
+  const bgColor = isSelected
+    ? c.bg50
+    : hovered
+    ? c.bg100
+    : "transparent";
+
+  return (
+    <button
+      onClick={() => { onSelect(emp.id); onAfterSelect?.(); }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      className={cn(
+        "w-full flex items-center gap-3 py-2.5 pl-2 pr-3 text-sm text-left transition-colors duration-150",
+        "rounded-l-lg rounded-r-none border-l-4",
+        isSelected ? "relative z-10 mr-[-1px] font-bold" : "font-medium"
+      )}
+      style={{
+        borderLeftColor: isSelected ? c.border : "transparent",
+        backgroundColor: bgColor,
+        color: isSelected ? c.text : undefined,
+      }}
+    >
+      {/* アバター */}
+      <div
+        className="w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0 border transition-colors"
+        style={
+          isSelected
+            ? { backgroundColor: c.avatar, borderColor: c.border + "66", color: c.text }
+            : { backgroundColor: "#f3f4f6", borderColor: "#e5e7eb", color: "#6b7280" }
+        }
+      >
+        {emp.name[0]}
+      </div>
+
+      {/* テキスト */}
+      <div className="flex-1 min-w-0">
+        <p className="truncate text-sm" style={{ color: isSelected ? c.text : undefined }}>
+          {emp.name}
+        </p>
+        <p className="text-xs text-muted-foreground truncate">{emp.department}</p>
+      </div>
+    </button>
+  );
+}
+
 function EmployeeSidebarContent({
   employees,
   selectedId,
@@ -178,67 +261,23 @@ function EmployeeSidebarContent({
         <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">従業員一覧</p>
       </div>
 
-      {/* Employee list — pr-0 でボタンが右端まで届くようにする */}
+      {/* Employee list */}
       <nav className="flex-1 overflow-y-auto py-2 pl-2 pr-0 space-y-0.5">
-        {employees.map((emp) => {
-          const isSelected = emp.id === selectedId;
-          return (
-            <button
-              key={emp.id}
-              onClick={() => {
-                onSelect(emp.id);
-                onAfterSelect?.();
-              }}
-              className={cn(
-                // 全タブ共通: 左のみ角丸・右は直角でサイドバー境界と揃える
-                "w-full flex items-center gap-3 py-2.5 text-sm transition-all duration-150 text-left",
-                "rounded-l-lg rounded-r-none border-l-4",
-                isSelected
-                  // アクティブ: 白背景・relative+z-10+mr-[-1px] でborder-rを上書き
-                  ? [
-                      "relative z-10",
-                      "bg-background text-primary border-l-primary font-bold",
-                      "mr-[-1px]",           // サイドバーのborder-rに1px食い込む
-                      "pl-2 pr-3",
-                    ].join(" ")
-                  : [
-                      "text-foreground border-l-transparent",
-                      "hover:bg-muted/60 hover:border-l-border/40",
-                      "pl-2 pr-3",
-                    ].join(" ")
-              )}
-            >
-              <div className={cn(
-                "w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0 border transition-colors",
-                isSelected
-                  ? "bg-primary/20 text-primary border-primary/30"
-                  : "bg-background/80 text-foreground/70 border-border"
-              )}>
-                {emp.name[0]}
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className={cn(
-                  "truncate text-sm",
-                  isSelected ? "font-bold text-primary" : "font-medium text-foreground"
-                )}>
-                  {emp.name}
-                </p>
-                <p className="text-xs text-muted-foreground truncate">{emp.department}</p>
-              </div>
-            </button>
-          );
-        })}
+        {employees.map((emp) => (
+          <EmployeeTabButton
+            key={emp.id}
+            emp={emp}
+            isSelected={emp.id === selectedId}
+            onSelect={onSelect}
+            onAfterSelect={onAfterSelect}
+          />
+        ))}
 
-        {/* 従業員追加ボタン — リスト末尾・他タブと同幅・同左揃え */}
+        {/* 従業員追加ボタン */}
         <div className="pt-1 pb-2">
           <button
             onClick={onAddClick}
-            className={cn(
-              "w-full flex items-center gap-3 pl-2 pr-3 py-2.5",
-              "rounded-l-lg rounded-r-none border-l-4 border-l-transparent",
-              "text-sm font-medium text-muted-foreground",
-              "hover:bg-muted/60 hover:text-foreground transition-all duration-150"
-            )}
+            className="w-full flex items-center gap-3 pl-2 pr-3 py-2.5 rounded-l-lg rounded-r-none border-l-4 border-l-transparent text-sm font-medium text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-all duration-150"
           >
             <div className="w-8 h-8 rounded-full flex items-center justify-center border border-dashed border-border/70 bg-background/60 flex-shrink-0">
               <Plus className="w-3.5 h-3.5" />
@@ -273,6 +312,7 @@ export default function Dashboard() {
   const [newPosition, setNewPosition] = useState("");
 
   const selectedEmployee = employees.find((e) => e.id === selectedEmployeeId) ?? employees[0];
+  const selectedColor = COLOR_MAP[selectedEmployee.color];
 
   const handleSelectEmployee = (id: string) => {
     setSelectedEmployeeId(id);
@@ -297,6 +337,9 @@ export default function Dashboard() {
     const empNumber = `EMP${String(maxNum + 1).padStart(3, "0")}`;
     const newId = `e_${Date.now()}`;
 
+    // カラーパレットを順番に循環して割り当て
+    const nextColor = COLOR_PALETTE[employees.length % COLOR_PALETTE.length];
+
     const newEmployee: EmployeeRecord = {
       id: newId,
       employeeNumber: empNumber,
@@ -305,6 +348,7 @@ export default function Dashboard() {
       position: newPosition.trim() || "未設定",
       joinDate: todayJP(),
       status: "在籍中",
+      color: nextColor,
     };
 
     setEmployees((prev) => [...prev, newEmployee]);
@@ -353,8 +397,11 @@ export default function Dashboard() {
             <EmployeeSidebarContent {...sidebarProps} />
           </aside>
 
-          {/* 詳細エリア */}
-          <div className="flex-1 overflow-y-auto">
+          {/* 詳細エリア — 選択中従業員の色でごく薄く染める */}
+          <div
+            className="flex-1 overflow-y-auto transition-colors duration-300"
+            style={{ backgroundColor: selectedColor.bg50 }}
+          >
             <AnimatePresence mode="wait">
               <motion.div
                 key={selectedEmployeeId}
@@ -367,11 +414,23 @@ export default function Dashboard() {
 
                   {/* 従業員ヘッダー */}
                   <div className="flex items-center gap-3 mb-6">
-                    <div className="w-11 h-11 rounded-full bg-gradient-to-br from-primary/20 to-indigo-100 text-primary flex items-center justify-center font-bold text-lg border border-primary/20 flex-shrink-0">
+                    <div
+                      className="w-11 h-11 rounded-full flex items-center justify-center font-bold text-lg border-2 flex-shrink-0 transition-colors duration-300"
+                      style={{
+                        backgroundColor: selectedColor.avatar,
+                        borderColor: selectedColor.border + "80",
+                        color: selectedColor.text,
+                      }}
+                    >
                       {selectedEmployee.name[0]}
                     </div>
                     <div>
-                      <h2 className="text-lg font-bold text-foreground">{selectedEmployee.name}</h2>
+                      <h2
+                        className="text-lg font-bold transition-colors duration-300"
+                        style={{ color: selectedColor.text }}
+                      >
+                        {selectedEmployee.name}
+                      </h2>
                       <p className="text-xs text-muted-foreground">
                         {selectedEmployee.employeeNumber} &middot; {selectedEmployee.department} &middot; {selectedEmployee.position}
                       </p>
