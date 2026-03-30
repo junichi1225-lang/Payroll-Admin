@@ -5,7 +5,8 @@ import { DUMMY_EMPLOYEE_DATA, EmployeeRecord, EmployeeColor } from "@/lib/dummy-
 import { calculateIncomeTax, calcEffectiveRate } from "@/lib/taxCalculator";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
-import { Calculator, Info, User, Plus, Users } from "lucide-react";
+import { Calculator, Info, Plus, Users } from "lucide-react";
+import { EmployeeInfoTab } from "@/components/EmployeeInfoTab";
 import {
   Dialog,
   DialogContent,
@@ -155,22 +156,6 @@ function TaxCalculatorForm() {
           社会保険料・住民税・各種控除は含まれておらず、実際の控除額と異なる場合があります。
         </p>
       </div>
-    </div>
-  );
-}
-
-// ─────────────────────────────────────────────
-// 社員情報タブ: プレースホルダー
-// ─────────────────────────────────────────────
-
-function EmployeeInfoPlaceholder() {
-  return (
-    <div className="flex flex-col items-center justify-center py-20 text-center max-w-md">
-      <div className="w-14 h-14 rounded-2xl bg-secondary flex items-center justify-center mb-4">
-        <User className="w-7 h-7 text-muted-foreground/50" />
-      </div>
-      <p className="text-base font-semibold text-foreground">社員情報エリア</p>
-      <p className="text-sm text-muted-foreground mt-1.5">将来の拡張用エリアです。現在準備中です。</p>
     </div>
   );
 }
@@ -475,7 +460,7 @@ export default function Dashboard() {
                       {activeTab === "payroll" ? (
                         <TaxCalculatorForm key={selectedEmployeeId} />
                       ) : (
-                        <EmployeeInfoPlaceholder />
+                        <EmployeeInfoTab key={selectedEmployeeId} employee={selectedEmployee} />
                       )}
                     </motion.div>
                   </AnimatePresence>
