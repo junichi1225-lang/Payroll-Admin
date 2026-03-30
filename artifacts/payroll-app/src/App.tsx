@@ -1,11 +1,12 @@
+import { useState } from "react";
 import { Switch, Route, Router as WouterRouter } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Dashboard from "@/pages/Dashboard";
+import LoginPage from "@/pages/LoginPage";
 import PlaceholderPage from "@/pages/PlaceholderPage";
 
-// Setup mock query client
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -18,7 +19,6 @@ const queryClient = new QueryClient({
 function Router() {
   return (
     <Switch>
-      {/* Root points to dashboard for the prototype */}
       <Route path="/" component={Dashboard} />
       <Route path="/dashboard" component={Dashboard} />
       <Route path="/payroll">
@@ -41,12 +41,18 @@ function Router() {
 }
 
 function App() {
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-          <Router />
-        </WouterRouter>
+        {isLoggedIn ? (
+          <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
+            <Router />
+          </WouterRouter>
+        ) : (
+          <LoginPage onLogin={() => setIsLoggedIn(true)} />
+        )}
         <Toaster />
       </TooltipProvider>
     </QueryClientProvider>
