@@ -219,18 +219,19 @@ function EmployeeTabButton({
         isSelected ? "relative z-10 mr-[-1px] font-bold" : "font-medium"
       )}
       style={{
-        borderLeftColor: isSelected ? c.border : "transparent",
+        // アクティブ: 100%不透明／非アクティブ: 約60%不透明で常時表示
+        borderLeftColor: isSelected ? c.border : c.border + "99",
         backgroundColor: bgColor,
         color: isSelected ? c.text : undefined,
       }}
     >
-      {/* アバター */}
+      {/* アバター — アクティブ/非アクティブ問わず固有色を使用 */}
       <div
         className="w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0 border transition-colors"
         style={
           isSelected
             ? { backgroundColor: c.avatar, borderColor: c.border + "66", color: c.text }
-            : { backgroundColor: "#f3f4f6", borderColor: "#e5e7eb", color: "#6b7280" }
+            : { backgroundColor: c.avatar + "cc", borderColor: c.border + "55", color: c.text }
         }
       >
         {emp.name[0]}
