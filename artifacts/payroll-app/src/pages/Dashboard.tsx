@@ -178,7 +178,7 @@ function EmployeeSidebarContent({
         <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">従業員一覧</p>
       </div>
 
-      {/* Employee list — pr-0 で右端にブリードさせる */}
+      {/* Employee list — pr-0 でボタンが右端まで届くようにする */}
       <nav className="flex-1 overflow-y-auto py-2 pl-2 pr-0 space-y-0.5">
         {employees.map((emp) => {
           const isSelected = emp.id === selectedId;
@@ -190,23 +190,37 @@ function EmployeeSidebarContent({
                 onAfterSelect?.();
               }}
               className={cn(
-                "w-full flex items-center gap-3 py-2.5 text-sm transition-all duration-150 text-left border-l-4",
+                // 全タブ共通: 左のみ角丸・右は直角でサイドバー境界と揃える
+                "w-full flex items-center gap-3 py-2.5 text-sm transition-all duration-150 text-left",
+                "rounded-l-lg rounded-r-none border-l-4",
                 isSelected
-                  // アクティブ: 右丸なし・右に1pxブリードでサイドバーのborder-rを消す
-                  ? "rounded-l-xl rounded-r-none bg-background text-primary border-primary font-bold pl-2 pr-3 mr-[-1px] shadow-sm"
-                  : "rounded-lg text-foreground border-transparent hover:bg-muted/40 pl-2 pr-3"
+                  // アクティブ: 白背景・relative+z-10+mr-[-1px] でborder-rを上書き
+                  ? [
+                      "relative z-10",
+                      "bg-background text-primary border-l-primary font-bold",
+                      "mr-[-1px]",           // サイドバーのborder-rに1px食い込む
+                      "pl-2 pr-3",
+                    ].join(" ")
+                  : [
+                      "text-foreground border-l-transparent",
+                      "hover:bg-muted/60 hover:border-l-border/40",
+                      "pl-2 pr-3",
+                    ].join(" ")
               )}
             >
               <div className={cn(
                 "w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm flex-shrink-0 border transition-colors",
                 isSelected
                   ? "bg-primary/20 text-primary border-primary/30"
-                  : "bg-background/60 text-foreground/70 border-border"
+                  : "bg-background/80 text-foreground/70 border-border"
               )}>
                 {emp.name[0]}
               </div>
               <div className="flex-1 min-w-0">
-                <p className={cn("truncate text-sm", isSelected ? "font-bold text-primary" : "font-medium text-foreground")}>
+                <p className={cn(
+                  "truncate text-sm",
+                  isSelected ? "font-bold text-primary" : "font-medium text-foreground"
+                )}>
                   {emp.name}
                 </p>
                 <p className="text-xs text-muted-foreground truncate">{emp.department}</p>
@@ -215,16 +229,23 @@ function EmployeeSidebarContent({
           );
         })}
 
-        {/* 従業員追加ボタン — リスト末尾に配置 */}
-        <button
-          onClick={onAddClick}
-          className="w-full flex items-center gap-2.5 pl-2 pr-3 py-2.5 rounded-lg text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-all duration-150 border-l-4 border-transparent mt-1"
-        >
-          <div className="w-8 h-8 rounded-full flex items-center justify-center bg-background/60 border border-dashed border-border flex-shrink-0">
-            <Plus className="w-4 h-4" />
-          </div>
-          <span>従業員を追加</span>
-        </button>
+        {/* 従業員追加ボタン — リスト末尾・他タブと同幅・同左揃え */}
+        <div className="pt-1 pb-2">
+          <button
+            onClick={onAddClick}
+            className={cn(
+              "w-full flex items-center gap-3 pl-2 pr-3 py-2.5",
+              "rounded-l-lg rounded-r-none border-l-4 border-l-transparent",
+              "text-sm font-medium text-muted-foreground",
+              "hover:bg-muted/60 hover:text-foreground transition-all duration-150"
+            )}
+          >
+            <div className="w-8 h-8 rounded-full flex items-center justify-center border border-dashed border-border/70 bg-background/60 flex-shrink-0">
+              <Plus className="w-3.5 h-3.5" />
+            </div>
+            <span>従業員を追加</span>
+          </button>
+        </div>
       </nav>
     </div>
   );
