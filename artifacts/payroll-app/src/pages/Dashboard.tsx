@@ -2,11 +2,11 @@ import { useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { MonthSwitcher } from "@/components/MonthSwitcher";
 import { DUMMY_EMPLOYEE_DATA, EmployeeRecord, EmployeeColor } from "@/lib/dummy-data";
-import { calculateIncomeTax, calcEffectiveRate } from "@/lib/taxCalculator";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
-import { Calculator, Info, Plus, Users } from "lucide-react";
+import { Plus, Users } from "lucide-react";
 import { EmployeeInfoTab } from "@/components/EmployeeInfoTab";
+import { PayrollTab } from "@/components/PayrollTab";
 import {
   Dialog,
   DialogContent,
@@ -43,122 +43,6 @@ const COLOR_MAP: Record<EmployeeColor, ColorTokens> = {
   purple: { border: "#a855f7", bg50: "#faf5ff", bg100: "#f3e8ff", text: "#9333ea", avatar: "#e9d5ff" },
   teal:   { border: "#14b8a6", bg50: "#f0fdfa", bg100: "#ccfbf1", text: "#0d9488", avatar: "#99f6e4" },
 };
-
-// ─────────────────────────────────────────────
-// Utility
-// ─────────────────────────────────────────────
-
-function formatJPY(amount: number): string {
-  return new Intl.NumberFormat("ja-JP", {
-    style: "currency",
-    currency: "JPY",
-    maximumFractionDigits: 0,
-  }).format(amount);
-}
-
-function toDisplayValue(digits: string): string {
-  if (!digits) return "";
-  return parseInt(digits, 10).toLocaleString("ja-JP");
-}
-
-function todayJP(): string {
-  const d = new Date();
-  return `${d.getFullYear()}年${String(d.getMonth() + 1).padStart(2, "0")}月${String(d.getDate()).padStart(2, "0")}日`;
-}
-
-// ─────────────────────────────────────────────
-// 給与情報タブ: 所得税計算フォーム
-// key={selectedEmployeeId} で従業員切替時にリセット
-// ─────────────────────────────────────────────
-
-function TaxCalculatorForm() {
-  const [inputValue, setInputValue] = useState("");
-
-  const rawDigits = inputValue.replace(/[^0-9]/g, "");
-  const monthlySalary = rawDigits ? parseInt(rawDigits, 10) : 0;
-  const incomeTax = calculateIncomeTax(monthlySalary);
-  const effectiveRate = calcEffectiveRate(monthlySalary);
-  const hasValue = monthlySalary > 0;
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const digits = e.target.value.replace(/[^0-9]/g, "");
-    setInputValue(toDisplayValue(digits));
-  };
-
-  return (
-    <div className="space-y-6 max-w-md">
-      <div className="flex items-center gap-2.5">
-        <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
-          <Calculator className="w-4 h-4 text-primary" />
-        </div>
-        <div>
-          <p className="text-sm font-semibold text-foreground">所得税シミュレーター</p>
-          <p className="text-xs text-muted-foreground">甲欄・扶養親族0人（令和6年分）</p>
-        </div>
-      </div>
-
-      <div className="bg-card border border-border rounded-2xl p-6 shadow-sm space-y-6">
-        <div className="space-y-1.5">
-          <label className="block text-sm font-semibold text-foreground">月給（円）</label>
-          <p className="text-xs text-muted-foreground">社会保険料控除前の総支給額を入力してください</p>
-          <div className="relative mt-1">
-            <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-semibold select-none">¥</span>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={inputValue}
-              onChange={handleChange}
-              placeholder="300,000"
-              className={cn(
-                "w-full pl-8 pr-4 py-3.5 rounded-xl border bg-background text-foreground text-base font-medium",
-                "focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all",
-                "placeholder:text-muted-foreground/40",
-                hasValue ? "border-primary/30" : "border-border"
-              )}
-            />
-          </div>
-        </div>
-
-        <div className="border-t border-border/60" />
-
-        <div className="space-y-1.5">
-          <label className="block text-sm font-semibold text-foreground">源泉徴収税額（月額）</label>
-          <p className="text-xs text-muted-foreground">入力値から自動計算されます</p>
-          <div className={cn(
-            "w-full px-4 py-3.5 rounded-xl border bg-background/50 transition-all",
-            hasValue && incomeTax > 0 ? "border-primary/20 bg-primary/5" : "border-border/50"
-          )}>
-            <span className={cn(
-              "text-2xl font-bold tabular-nums tracking-tight transition-colors",
-              hasValue && incomeTax > 0 ? "text-primary" : "text-muted-foreground/40"
-            )}>
-              {hasValue ? formatJPY(incomeTax) : "¥ —"}
-            </span>
-          </div>
-          {hasValue && (
-            <div className="pt-1 space-y-1">
-              <div className="flex items-center justify-between text-xs text-muted-foreground px-1">
-                <span>実効税率</span>
-                <span className="font-semibold text-foreground tabular-nums">{effectiveRate.toFixed(2)} %</span>
-              </div>
-              {monthlySalary < 88_000 && (
-                <p className="text-xs text-muted-foreground px-1">月額 88,000 円未満のため源泉徴収なし</p>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="flex items-start gap-2 text-xs text-muted-foreground">
-        <Info className="w-4 h-4 flex-shrink-0 mt-0.5 text-primary/40" />
-        <p>
-          本計算は国税庁「給与所得の源泉徴収税額表（月額表）」電算機計算の特例に基づく甲欄・扶養親族0人の簡易計算です。
-          社会保険料・住民税・各種控除は含まれておらず、実際の控除額と異なる場合があります。
-        </p>
-      </div>
-    </div>
-  );
-}
 
 // ─────────────────────────────────────────────
 // 従業員サイドバー（PC・モバイル共用コンテンツ）
@@ -458,7 +342,7 @@ export default function Dashboard() {
                       transition={{ duration: 0.18 }}
                     >
                       {activeTab === "payroll" ? (
-                        <TaxCalculatorForm key={selectedEmployeeId} />
+                        <PayrollTab key={selectedEmployeeId} />
                       ) : (
                         <EmployeeInfoTab key={selectedEmployeeId} employee={selectedEmployee} />
                       )}
