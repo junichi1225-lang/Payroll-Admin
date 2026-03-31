@@ -27,8 +27,51 @@ function formatZipcode(raw: string): string {
 }
 
 // ─────────────────────────────────────────────
-// 入力フィールド共通スタイル
+// useKanaInput — IME確定前の読みを安定取得するカスタムフック
+//
+// 仕組み:
+//   compositionStart  → 現時点の kana を「確定済み」としてメモ
+//   compositionUpdate → e.data（IME 入力中のひらがな）を変換して
+//                       「確定済み + 現在候補」を kana にセット
+//   compositionEnd    → 変換確定。次の compositionStart まで追記モード
+//
+// これにより「山田」と打ったとき セイ欄 に「ヤマダ」が残り、
+// ペースト時は手動入力できる（readOnly ではない）。
 // ─────────────────────────────────────────────
+
+function useKanaInput(initial = "") {
+  const [kana, setKana] = useState(initial);
+  // 現在の IME セッション開始前に確定していた kana
+  const committedRef = useRef("");
+
+  const compositionHandlers = {
+    onCompositionStart: () => {
+      // この IME セッション開始時点の kana を保存
+      committedRef.current = kana;
+    },
+    onCompositionUpdate: (e: React.CompositionEvent<HTMLInputElement>) => {
+      // e.data = まだ漢字変換していない中間テキスト（ひらがな）
+      const candidate = toKatakana(e.data);
+      setKana(committedRef.current + candidate);
+    },
+    onCompositionEnd: () => {
+      // 変換確定 — kana は compositionUpdate で既にセット済み
+      // 次の compositionStart で committedRef が更新される
+    },
+  };
+
+  return { kana, setKana, compositionHandlers };
+}
+
+// ─────────────────────────────────────────────
+// 入力フィールド共通コンポーネント
+// ─────────────────────────────────────────────
+
+type CompositionHandlers = {
+  onCompositionStart?: (e: React.CompositionEvent<HTMLInputElement>) => void;
+  onCompositionUpdate?: (e: React.CompositionEvent<HTMLInputElement>) => void;
+  onCompositionEnd?: (e: React.CompositionEvent<HTMLInputElement>) => void;
+};
 
 function FieldInput({
   id,
@@ -37,33 +80,24 @@ function FieldInput({
   onChange,
   placeholder,
   type = "text",
-  readOnly = false,
   suffix,
   className,
-  onCompositionStart,
-  onCompositionUpdate,
-  onCompositionEnd,
+  compositionHandlers,
 }: {
   id: string;
   label: string;
   value: string;
-  onChange?: (v: string) => void;
+  onChange: (v: string) => void;
   placeholder?: string;
   type?: string;
-  readOnly?: boolean;
   suffix?: React.ReactNode;
   className?: string;
-  onCompositionStart?: (e: React.CompositionEvent<HTMLInputElement>) => void;
-  onCompositionUpdate?: (e: React.CompositionEvent<HTMLInputElement>) => void;
-  onCompositionEnd?: (e: React.CompositionEvent<HTMLInputElement>) => void;
+  compositionHandlers?: CompositionHandlers;
 }) {
   const [focused, setFocused] = useState(false);
   return (
     <div className={cn("space-y-1.5", className)}>
-      <label
-        htmlFor={id}
-        className="block text-xs font-semibold text-foreground/80"
-      >
+      <label htmlFor={id} className="block text-xs font-semibold text-foreground/80">
         {label}
       </label>
       <div className="relative">
@@ -71,18 +105,14 @@ function FieldInput({
           id={id}
           type={type}
           value={value}
-          onChange={(e) => onChange?.(e.target.value)}
+          onChange={(e) => onChange(e.target.value)}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
-          onCompositionStart={onCompositionStart}
-          onCompositionUpdate={onCompositionUpdate}
-          onCompositionEnd={onCompositionEnd}
           placeholder={placeholder}
-          readOnly={readOnly}
+          {...compositionHandlers}
           className={cn(
             "w-full px-3 py-2.5 rounded-xl border bg-background text-sm text-foreground",
             "placeholder:text-muted-foreground/40 transition-all outline-none",
-            readOnly && "bg-muted/30 text-muted-foreground cursor-default",
             suffix && "pr-10"
           )}
           style={{
@@ -107,14 +137,25 @@ interface EmployeeInfoTabProps {
 }
 
 export function EmployeeInfoTab({ employee }: EmployeeInfoTabProps) {
-  // ── 基本情報フォームの状態 ──
-  const [kanjiName, setKanjiName] = useState(employee.name);
-  const [furigana, setFurigana] = useState("");
+  // ── 氏名（姓・名）── 従業員名をスペースで分割して初期値
+  const [nameParts] = useState(() => {
+    const parts = employee.name.split(/\s+/);
+    return { last: parts[0] ?? "", first: parts.slice(1).join(" ") };
+  });
+
+  const [lastName, setLastName] = useState(nameParts.last);
+  const [firstName, setFirstName] = useState(nameParts.first);
+
+  // ── フリガナ（セイ・メイ）── useKanaInput で独立管理
+  const lastNameKana = useKanaInput("");
+  const firstNameKana = useKanaInput("");
+
+  // ── その他の基本情報 ──
   const [birthdate, setBirthdate] = useState("");
   const [zipcode, setZipcode] = useState("");
   const [address, setAddress] = useState("");
 
-  // ── 詳細情報フォームの状態 ──
+  // ── 詳細情報 ──
   const [phone, setPhone] = useState("");
   const [nenkinNumber, setNenkinNumber] = useState("");
   const [employmentInsurance, setEmploymentInsurance] = useState("");
@@ -124,30 +165,6 @@ export function EmployeeInfoTab({ employee }: EmployeeInfoTabProps) {
   const [zipLoading, setZipLoading] = useState(false);
   const [zipSuccess, setZipSuccess] = useState(false);
   const [zipError, setZipError] = useState("");
-
-  // ── IME（フリガナ自動入力）── 
-  const composingRef = useRef(false);
-  const currentCompositionRef = useRef("");
-
-  const handleKanjiCompositionUpdate = (e: React.CompositionEvent<HTMLInputElement>) => {
-    // IME入力中のひらがなをカタカナに変換してフリガナへセット
-    const katakana = toKatakana(e.data);
-    if (katakana) {
-      setFurigana(katakana);
-      currentCompositionRef.current = katakana;
-    }
-  };
-
-  const handleKanjiCompositionStart = () => {
-    composingRef.current = true;
-  };
-
-  const handleKanjiCompositionEnd = (e: React.CompositionEvent<HTMLInputElement>) => {
-    composingRef.current = false;
-    // 確定時も最後の変換結果を反映
-    const katakana = toKatakana(e.data);
-    if (katakana) setFurigana(katakana);
-  };
 
   // ── 郵便番号 → 住所自動補完 ──
   const handleZipcodeChange = async (raw: string) => {
@@ -165,7 +182,7 @@ export function EmployeeInfoTab({ employee }: EmployeeInfoTabProps) {
         `https://zipcloud.ibsnet.co.jp/api/search?zipcode=${digits}`
       );
       const json = await res.json();
-      if (json.results && json.results.length > 0) {
+      if (json.results?.length > 0) {
         const r = json.results[0];
         setAddress(`${r.address1}${r.address2}${r.address3}`);
         setZipSuccess(true);
@@ -182,31 +199,56 @@ export function EmployeeInfoTab({ employee }: EmployeeInfoTabProps) {
 
   return (
     <div className="space-y-6 max-w-xl">
-      {/* ── セクションタイトル ── */}
-      <div className="space-y-4">
+      {/* ── 基本情報セクション ── */}
+      <div className="space-y-5">
         <h3 className="text-sm font-bold text-foreground border-b border-border/60 pb-2">
           基本情報
         </h3>
 
-        {/* 氏名 2カラム */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <FieldInput
-            id="kanjiName"
-            label="氏名（漢字）"
-            value={kanjiName}
-            onChange={setKanjiName}
-            placeholder="山田 太郎"
-            onCompositionStart={handleKanjiCompositionStart}
-            onCompositionUpdate={handleKanjiCompositionUpdate}
-            onCompositionEnd={handleKanjiCompositionEnd}
-          />
-          <FieldInput
-            id="furigana"
-            label="氏名（フリガナ）"
-            value={furigana}
-            onChange={setFurigana}
-            placeholder="ヤマダ タロウ"
-          />
+        {/* 氏名グループ：4マス（姓漢字・名漢字 / セイ・メイ） */}
+        <div className="space-y-2">
+          {/* 姓（漢字） / 名（漢字） */}
+          <div className="grid grid-cols-2 gap-3">
+            <FieldInput
+              id="lastName"
+              label="姓（漢字）"
+              value={lastName}
+              onChange={setLastName}
+              placeholder="山田"
+              compositionHandlers={lastNameKana.compositionHandlers}
+            />
+            <FieldInput
+              id="firstName"
+              label="名（漢字）"
+              value={firstName}
+              onChange={setFirstName}
+              placeholder="太郎"
+              compositionHandlers={firstNameKana.compositionHandlers}
+            />
+          </div>
+
+          {/* セイ（カタカナ） / メイ（カタカナ） — 漢字入力と連動 */}
+          <div className="grid grid-cols-2 gap-3">
+            <FieldInput
+              id="lastNameKana"
+              label="セイ（カタカナ）"
+              value={lastNameKana.kana}
+              onChange={lastNameKana.setKana}
+              placeholder="ヤマダ"
+            />
+            <FieldInput
+              id="firstNameKana"
+              label="メイ（カタカナ）"
+              value={firstNameKana.kana}
+              onChange={firstNameKana.setKana}
+              placeholder="タロウ"
+            />
+          </div>
+
+          {/* ガイド */}
+          <p className="text-[11px] text-muted-foreground/60 pl-0.5">
+            ※ 漢字欄でIME入力すると、読み（カタカナ）が自動補完されます。ペースト時は手動でご入力ください。
+          </p>
         </div>
 
         {/* 生年月日 */}
@@ -257,10 +299,7 @@ export function EmployeeInfoTab({ employee }: EmployeeInfoTabProps) {
       <Collapsible open={detailOpen} onOpenChange={setDetailOpen}>
         <CollapsibleTrigger asChild>
           <button
-            className={cn(
-              "flex items-center gap-2 text-sm font-semibold transition-colors",
-              "text-muted-foreground hover:text-foreground"
-            )}
+            className="flex items-center gap-2 text-sm font-semibold text-muted-foreground hover:text-foreground transition-colors"
           >
             {detailOpen ? (
               <ChevronUp className="w-4 h-4" />
@@ -304,7 +343,7 @@ export function EmployeeInfoTab({ employee }: EmployeeInfoTabProps) {
         </CollapsibleContent>
       </Collapsible>
 
-      {/* ── 保存ボタン ── */}
+      {/* ── 保存・リセットボタン ── */}
       <div className="pt-2 flex gap-3">
         <button
           className="px-5 py-2.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-colors shadow-sm"
@@ -315,8 +354,10 @@ export function EmployeeInfoTab({ employee }: EmployeeInfoTabProps) {
         <button
           className="px-4 py-2.5 rounded-xl border border-border text-sm font-medium text-muted-foreground hover:bg-muted/40 transition-colors"
           onClick={() => {
-            setKanjiName(employee.name);
-            setFurigana("");
+            setLastName(nameParts.last);
+            setFirstName(nameParts.first);
+            lastNameKana.setKana("");
+            firstNameKana.setKana("");
             setBirthdate("");
             setZipcode("");
             setAddress("");
