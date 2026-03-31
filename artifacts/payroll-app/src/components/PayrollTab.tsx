@@ -1,8 +1,19 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { calculateIncomeTax, calcEffectiveRate } from "@/lib/taxCalculator";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
-import { Calculator, Clock, Info, TrendingUp } from "lucide-react";
+import {
+  Calculator,
+  Clock,
+  Info,
+  TrendingUp,
+  Upload,
+  Loader2,
+  CheckCircle2,
+  AlertCircle,
+  Plus,
+  ScanLine,
+} from "lucide-react";
 
 // ─────────────────────────────────────────────
 // ユーティリティ
@@ -21,34 +32,51 @@ function toDisplayValue(digits: string): string {
   return parseInt(digits, 10).toLocaleString("ja-JP");
 }
 
-/** "HH:MM" 形式の2点から労働時間（小数）を返す */
 function calcHours(start: string, end: string): number {
+  if (!start || !end || start === "--:--" || end === "--:--") return 0;
   const [sh, sm] = start.split(":").map(Number);
   const [eh, em] = end.split(":").map(Number);
-  const diff = (eh * 60 + em) - (sh * 60 + sm);
-  return Math.max(0, diff / 60);
+  return Math.max(0, (eh * 60 + em - (sh * 60 + sm)) / 60);
 }
 
 // ─────────────────────────────────────────────
-// タイムカードのダミーデータ
+// タイムカード型定義
 // ─────────────────────────────────────────────
+
+type OcrStatus = "success" | "error" | "manual";
 
 type TimecardRow = {
   id: string;
   date: string;
-  ocrStart: string;   // OCR打刻（生データ）
+  ocrStatus: OcrStatus;
+  ocrStart: string;    // OCR読取値（成功時）
   ocrEnd: string;
-  stdStart: string;   // 通常計上開始（丸め後）
-  stdEnd: string;     // 通常計上終了
+  editStart: string;   // エラー行・手動行での手修正値
+  editEnd: string;
+  stdStart: string;    // 計上開始
+  stdEnd: string;      // 計上終了
   earlyOvertime: boolean;
 };
 
-const INITIAL_TIMECARD: TimecardRow[] = [
-  { id: "r1", date: "4/1（火）", ocrStart: "08:55", ocrEnd: "18:02", stdStart: "09:00", stdEnd: "18:00", earlyOvertime: false },
-  { id: "r2", date: "4/2（水）", ocrStart: "08:48", ocrEnd: "18:15", stdStart: "09:00", stdEnd: "18:15", earlyOvertime: false },
-  { id: "r3", date: "4/3（木）", ocrStart: "09:03", ocrEnd: "17:58", stdStart: "09:03", stdEnd: "17:58", earlyOvertime: false },
-  { id: "r4", date: "4/4（金）", ocrStart: "08:51", ocrEnd: "19:30", stdStart: "09:00", stdEnd: "19:30", earlyOvertime: false },
+// ─────────────────────────────────────────────
+// ダミーデータ
+// ─────────────────────────────────────────────
+
+const INITIAL_ROWS: TimecardRow[] = [
+  { id: "i1", date: "4/1（火）", ocrStatus: "success", ocrStart: "08:55", ocrEnd: "18:02", editStart: "", editEnd: "", stdStart: "09:00", stdEnd: "18:00", earlyOvertime: false },
+  { id: "i2", date: "4/2（水）", ocrStatus: "success", ocrStart: "08:48", ocrEnd: "18:15", editStart: "", editEnd: "", stdStart: "09:00", stdEnd: "18:15", earlyOvertime: false },
+  { id: "i3", date: "4/3（木）", ocrStatus: "success", ocrStart: "09:03", ocrEnd: "17:58", editStart: "", editEnd: "", stdStart: "09:03", stdEnd: "17:58", earlyOvertime: false },
+  { id: "i4", date: "4/4（金）", ocrStatus: "success", ocrStart: "08:51", ocrEnd: "19:30", editStart: "", editEnd: "", stdStart: "09:00", stdEnd: "19:30", earlyOvertime: false },
 ];
+
+// OCR 解析後のダミー結果（成功・エラー混在）
+const OCR_RESULT_ROWS: TimecardRow[] = [
+  { id: "o1", date: "4/1（火）", ocrStatus: "success", ocrStart: "08:55", ocrEnd: "18:00", editStart: "", editEnd: "", stdStart: "09:00", stdEnd: "18:00", earlyOvertime: false },
+  { id: "o2", date: "4/2（水）", ocrStatus: "error",   ocrStart: "",      ocrEnd: "",      editStart: "", editEnd: "", stdStart: "--:--", stdEnd: "--:--", earlyOvertime: false },
+  { id: "o3", date: "4/3（木）", ocrStatus: "success", ocrStart: "09:00", ocrEnd: "17:30", editStart: "", editEnd: "", stdStart: "09:00", stdEnd: "17:30", earlyOvertime: false },
+];
+
+let manualRowCounter = 0;
 
 // ─────────────────────────────────────────────
 // 給与体系ピルトグル
@@ -56,32 +84,23 @@ const INITIAL_TIMECARD: TimecardRow[] = [
 
 type PayType = "monthly" | "hourly";
 
-function PayTypePills({
-  value,
-  onChange,
-}: {
-  value: PayType;
-  onChange: (v: PayType) => void;
-}) {
+function PayTypePills({ value, onChange }: { value: PayType; onChange: (v: PayType) => void }) {
   return (
     <div className="inline-flex items-center bg-muted rounded-full p-1 gap-1">
-      {(["monthly", "hourly"] as PayType[]).map((type) => {
-        const active = value === type;
-        return (
-          <button
-            key={type}
-            onClick={() => onChange(type)}
-            className={cn(
-              "px-4 py-1.5 rounded-full text-sm font-semibold transition-all duration-200",
-              active
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-          >
-            {type === "monthly" ? "月給制" : "時給制"}
-          </button>
-        );
-      })}
+      {(["monthly", "hourly"] as PayType[]).map((type) => (
+        <button
+          key={type}
+          onClick={() => onChange(type)}
+          className={cn(
+            "px-4 py-1.5 rounded-full text-sm font-semibold transition-all duration-200",
+            value === type
+              ? "bg-background text-foreground shadow-sm"
+              : "text-muted-foreground hover:text-foreground"
+          )}
+        >
+          {type === "monthly" ? "月給制" : "時給制"}
+        </button>
+      ))}
     </div>
   );
 }
@@ -90,31 +109,17 @@ function PayTypePills({
 // 月給入力エリア
 // ─────────────────────────────────────────────
 
-function MonthlyInput({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-}) {
+function MonthlyInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const hasValue = value.replace(/[^0-9]/g, "").length > 0;
   return (
     <div className="space-y-1.5">
       <label className="block text-sm font-semibold text-foreground">月給（円）</label>
       <p className="text-xs text-muted-foreground">社会保険料控除前の総支給額を入力してください</p>
       <div className="relative mt-1">
-        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-semibold select-none">
-          ¥
-        </span>
+        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-semibold select-none">¥</span>
         <input
-          type="text"
-          inputMode="numeric"
-          value={value}
-          onChange={(e) => {
-            const digits = e.target.value.replace(/[^0-9]/g, "");
-            onChange(toDisplayValue(digits));
-          }}
-          placeholder="300,000"
+          type="text" inputMode="numeric" value={value} placeholder="300,000"
+          onChange={(e) => { const d = e.target.value.replace(/[^0-9]/g, ""); onChange(toDisplayValue(d)); }}
           className={cn(
             "w-full pl-8 pr-4 py-3.5 rounded-xl border bg-background text-foreground text-base font-medium",
             "focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all",
@@ -128,42 +133,311 @@ function MonthlyInput({
 }
 
 // ─────────────────────────────────────────────
-// 時給入力 + タイムカードテーブル
+// OCR アップロードバナー
+// ─────────────────────────────────────────────
+
+type OcrState = "idle" | "loading" | "done";
+
+function OcrUploadBanner({
+  ocrState,
+  onFileSelect,
+}: {
+  ocrState: OcrState;
+  onFileSelect: (file: File) => void;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  return (
+    <div className={cn(
+      "rounded-xl border-2 border-dashed p-4 flex flex-col sm:flex-row items-center gap-3 transition-colors",
+      ocrState === "loading"
+        ? "border-primary/30 bg-primary/5"
+        : ocrState === "done"
+        ? "border-green-400/40 bg-green-50/60"
+        : "border-border hover:border-primary/40 hover:bg-muted/30"
+    )}>
+      {/* 隠しファイル入力 */}
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*,.pdf"
+        className="hidden"
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) onFileSelect(f); e.target.value = ""; }}
+      />
+
+      <div className="flex items-center gap-3 flex-1 min-w-0">
+        <div className={cn(
+          "w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0",
+          ocrState === "loading" ? "bg-primary/10" : ocrState === "done" ? "bg-green-100" : "bg-muted"
+        )}>
+          {ocrState === "loading" ? (
+            <Loader2 className="w-5 h-5 text-primary animate-spin" />
+          ) : ocrState === "done" ? (
+            <CheckCircle2 className="w-5 h-5 text-green-600" />
+          ) : (
+            <ScanLine className="w-5 h-5 text-muted-foreground" />
+          )}
+        </div>
+        <div className="min-w-0">
+          {ocrState === "loading" ? (
+            <>
+              <p className="text-sm font-semibold text-primary">AI解析中...</p>
+              <p className="text-xs text-muted-foreground">タイムカード画像を読み取っています</p>
+            </>
+          ) : ocrState === "done" ? (
+            <>
+              <p className="text-sm font-semibold text-green-700">読み込み完了</p>
+              <p className="text-xs text-muted-foreground">エラー行を手修正してください</p>
+            </>
+          ) : (
+            <>
+              <p className="text-sm font-semibold text-foreground">タイムカードをOCRで読み込む</p>
+              <p className="text-xs text-muted-foreground">画像・PDF をアップロードしてAI解析</p>
+            </>
+          )}
+        </div>
+      </div>
+
+      <button
+        disabled={ocrState === "loading"}
+        onClick={() => fileRef.current?.click()}
+        className={cn(
+          "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all flex-shrink-0",
+          ocrState === "loading"
+            ? "bg-muted text-muted-foreground cursor-not-allowed"
+            : "bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm"
+        )}
+      >
+        {ocrState === "loading" ? (
+          <Loader2 className="w-4 h-4 animate-spin" />
+        ) : (
+          <Upload className="w-4 h-4" />
+        )}
+        {ocrState === "loading" ? "解析中..." : ocrState === "done" ? "再読込" : "ファイルを選択"}
+      </button>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// タイムカードテーブル
+// ─────────────────────────────────────────────
+
+function TimecardTable({
+  rows,
+  onToggleEarlyOvertime,
+  onEditTime,
+  onAddManualRow,
+  totalHours,
+}: {
+  rows: TimecardRow[];
+  onToggleEarlyOvertime: (id: string, checked: boolean) => void;
+  onEditTime: (id: string, field: "editStart" | "editEnd", value: string) => void;
+  onAddManualRow: () => void;
+  totalHours: number;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <Clock className="w-4 h-4 text-muted-foreground" />
+        <span className="text-sm font-semibold text-foreground">今月のタイムカード</span>
+        <span className="text-xs text-muted-foreground ml-auto">{rows.length} 件</span>
+      </div>
+
+      <div className="rounded-xl border border-border overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-muted/50 border-b border-border">
+              <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground w-8"></th>
+              <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground w-[76px]">日付</th>
+              <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground">OCR打刻</th>
+              <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground">計上時間</th>
+              <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground">朝残業</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border/60">
+            {rows.map((row) => {
+              const isError = row.ocrStatus === "error";
+              const isManual = row.ocrStatus === "manual";
+              const needsInput = isError || isManual;
+
+              // 計上時間の実効値
+              const effectiveStart =
+                needsInput
+                  ? (row.editStart || "--:--")
+                  : row.earlyOvertime
+                  ? row.ocrStart
+                  : row.stdStart;
+              const effectiveEnd =
+                needsInput ? (row.editEnd || "--:--") : row.stdEnd;
+
+              // エラー行のどちらかが未入力かどうか
+              const hasEditedBoth = row.editStart && row.editEnd;
+
+              return (
+                <tr
+                  key={row.id}
+                  className={cn(
+                    "transition-colors",
+                    isError ? "bg-red-50/60" : "bg-background hover:bg-muted/20",
+                    isManual && "bg-blue-50/40"
+                  )}
+                >
+                  {/* ステータスアイコン */}
+                  <td className="px-2 py-2.5 text-center">
+                    {row.ocrStatus === "success" ? (
+                      <CheckCircle2 className="w-4 h-4 text-green-500 mx-auto" />
+                    ) : isError && !hasEditedBoth ? (
+                      <AlertCircle className="w-4 h-4 text-red-500 mx-auto" />
+                    ) : isManual && !hasEditedBoth ? (
+                      <div className="w-4 h-4 rounded-full border-2 border-dashed border-muted-foreground/40 mx-auto" />
+                    ) : (
+                      <CheckCircle2 className="w-4 h-4 text-green-500 mx-auto" />
+                    )}
+                  </td>
+
+                  {/* 日付 */}
+                  <td className="px-2 py-2.5 text-xs font-medium text-foreground whitespace-nowrap">
+                    {row.date}
+                  </td>
+
+                  {/* OCR打刻 / 手修正インプット */}
+                  <td className="px-2 py-2.5">
+                    {needsInput ? (
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="time"
+                          value={row.editStart}
+                          onChange={(e) => onEditTime(row.id, "editStart", e.target.value)}
+                          className={cn(
+                            "w-[88px] px-2 py-1.5 rounded-lg border text-xs font-medium bg-background",
+                            "focus:outline-none focus:ring-2 transition-all",
+                            !row.editStart && isError
+                              ? "border-red-400 focus:ring-red-200 focus:border-red-500"
+                              : "border-border focus:ring-primary/20 focus:border-primary/50"
+                          )}
+                        />
+                        <span className="text-muted-foreground text-xs">–</span>
+                        <input
+                          type="time"
+                          value={row.editEnd}
+                          onChange={(e) => onEditTime(row.id, "editEnd", e.target.value)}
+                          className={cn(
+                            "w-[88px] px-2 py-1.5 rounded-lg border text-xs font-medium bg-background",
+                            "focus:outline-none focus:ring-2 transition-all",
+                            !row.editEnd && isError
+                              ? "border-red-400 focus:ring-red-200 focus:border-red-500"
+                              : "border-border focus:ring-primary/20 focus:border-primary/50"
+                          )}
+                        />
+                        {isError && !hasEditedBoth && (
+                          <span className="text-[10px] text-red-600 font-semibold bg-red-50 border border-red-200 rounded px-1 py-0.5 whitespace-nowrap">
+                            要修正
+                          </span>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-muted-foreground tabular-nums">
+                        {row.ocrStart} – {row.ocrEnd}
+                      </span>
+                    )}
+                  </td>
+
+                  {/* 計上時間 */}
+                  <td className="px-2 py-2.5 tabular-nums">
+                    {effectiveStart === "--:--" || effectiveEnd === "--:--" ? (
+                      <span className="text-xs text-muted-foreground/50">--:-- – --:--</span>
+                    ) : (
+                      <span className="text-xs font-bold text-foreground">
+                        {effectiveStart}
+                        <span className="font-normal text-muted-foreground"> – </span>
+                        {effectiveEnd}
+                        {row.earlyOvertime && (
+                          <span className="ml-1.5 text-[10px] font-semibold text-amber-600 bg-amber-50 border border-amber-200 rounded px-1 py-0.5">
+                            朝残
+                          </span>
+                        )}
+                      </span>
+                    )}
+                  </td>
+
+                  {/* 朝残業スイッチ */}
+                  <td className="px-2 py-2.5">
+                    {!needsInput || hasEditedBoth ? (
+                      <Switch
+                        checked={row.earlyOvertime}
+                        onCheckedChange={(checked) => onToggleEarlyOvertime(row.id, checked)}
+                        className="data-[state=checked]:bg-amber-500"
+                        disabled={needsInput && !hasEditedBoth}
+                      />
+                    ) : (
+                      <Switch disabled className="opacity-30" />
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* 手動追加ボタン */}
+      <button
+        onClick={onAddManualRow}
+        className="w-full flex items-center justify-center gap-2 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted/40 rounded-lg border border-dashed border-border transition-colors"
+      >
+        <Plus className="w-3.5 h-3.5" />
+        打刻行を手動で追加
+      </button>
+
+      {/* 当月総労働時間 */}
+      <div className="flex items-center justify-between px-3 py-2.5 bg-muted/40 rounded-xl border border-border/60">
+        <span className="text-xs font-semibold text-muted-foreground">当月総労働時間（表示分）</span>
+        <span className="text-sm font-bold text-foreground tabular-nums">
+          {totalHours.toFixed(1)} 時間
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// 時給入力 + OCR + タイムカードセクション
 // ─────────────────────────────────────────────
 
 function HourlySection({
   hourlyRate,
   onHourlyRateChange,
   rows,
+  ocrState,
+  onFileSelect,
   onToggleEarlyOvertime,
+  onEditTime,
+  onAddManualRow,
   totalHours,
 }: {
   hourlyRate: string;
   onHourlyRateChange: (v: string) => void;
   rows: TimecardRow[];
+  ocrState: OcrState;
+  onFileSelect: (file: File) => void;
   onToggleEarlyOvertime: (id: string, checked: boolean) => void;
+  onEditTime: (id: string, field: "editStart" | "editEnd", value: string) => void;
+  onAddManualRow: () => void;
   totalHours: number;
 }) {
   const hasRate = hourlyRate.replace(/[^0-9]/g, "").length > 0;
   return (
     <div className="space-y-5">
-      {/* 基本時給入力 */}
+      {/* 基本時給 */}
       <div className="space-y-1.5">
         <label className="block text-sm font-semibold text-foreground">基本時給（円）</label>
         <p className="text-xs text-muted-foreground">社会保険料控除前の基本時給を入力してください</p>
         <div className="relative mt-1 max-w-[200px]">
-          <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-semibold select-none">
-            ¥
-          </span>
+          <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-semibold select-none">¥</span>
           <input
-            type="text"
-            inputMode="numeric"
-            value={hourlyRate}
-            onChange={(e) => {
-              const digits = e.target.value.replace(/[^0-9]/g, "");
-              onHourlyRateChange(toDisplayValue(digits));
-            }}
-            placeholder="1,200"
+            type="text" inputMode="numeric" value={hourlyRate} placeholder="1,200"
+            onChange={(e) => { const d = e.target.value.replace(/[^0-9]/g, ""); onHourlyRateChange(toDisplayValue(d)); }}
             className={cn(
               "w-full pl-8 pr-4 py-3.5 rounded-xl border bg-background text-foreground text-base font-medium",
               "focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all",
@@ -174,88 +448,26 @@ function HourlySection({
         </div>
       </div>
 
-      {/* タイムカードテーブル */}
-      <div className="space-y-2">
-        <div className="flex items-center gap-2">
-          <Clock className="w-4 h-4 text-muted-foreground" />
-          <span className="text-sm font-semibold text-foreground">今月のタイムカード</span>
-        </div>
-        <div className="rounded-xl border border-border overflow-hidden">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-muted/50 border-b border-border">
-                <th className="text-left px-3 py-2.5 text-xs font-semibold text-muted-foreground w-[80px]">日付</th>
-                <th className="text-left px-3 py-2.5 text-xs font-semibold text-muted-foreground">OCR打刻</th>
-                <th className="text-left px-3 py-2.5 text-xs font-semibold text-muted-foreground">計上時間</th>
-                <th className="text-left px-3 py-2.5 text-xs font-semibold text-muted-foreground">朝残業</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border/60">
-              {rows.map((row) => {
-                // 朝残業ONのとき、計上開始をOCR打刻に変更
-                const effectiveStart = row.earlyOvertime ? row.ocrStart : row.stdStart;
-                const effectiveEnd = row.stdEnd;
-                return (
-                  <tr key={row.id} className="bg-background hover:bg-muted/20 transition-colors">
-                    <td className="px-3 py-3 text-xs font-medium text-foreground whitespace-nowrap">
-                      {row.date}
-                    </td>
-                    <td className="px-3 py-3 text-xs text-muted-foreground tabular-nums">
-                      {row.ocrStart} – {row.ocrEnd}
-                    </td>
-                    <td className="px-3 py-3 tabular-nums">
-                      <span className="text-xs font-bold text-foreground">
-                        {effectiveStart}
-                      </span>
-                      <span className="text-xs text-muted-foreground"> – </span>
-                      <span className="text-xs font-bold text-foreground">
-                        {effectiveEnd}
-                      </span>
-                      {row.earlyOvertime && (
-                        <span className="ml-1.5 text-[10px] font-semibold text-amber-600 bg-amber-50 border border-amber-200 rounded px-1 py-0.5">
-                          朝残
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-3 py-3">
-                      <Switch
-                        checked={row.earlyOvertime}
-                        onCheckedChange={(checked) =>
-                          onToggleEarlyOvertime(row.id, checked)
-                        }
-                        className="data-[state=checked]:bg-amber-500"
-                      />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+      {/* OCR バナー */}
+      <OcrUploadBanner ocrState={ocrState} onFileSelect={onFileSelect} />
 
-        {/* 当月総労働時間 */}
-        <div className="flex items-center justify-between px-3 py-2.5 bg-muted/40 rounded-xl border border-border/60">
-          <span className="text-xs font-semibold text-muted-foreground">当月総労働時間（表示分）</span>
-          <span className="text-sm font-bold text-foreground tabular-nums">
-            {totalHours.toFixed(1)} 時間
-          </span>
-        </div>
-      </div>
+      {/* タイムカードテーブル */}
+      <TimecardTable
+        rows={rows}
+        onToggleEarlyOvertime={onToggleEarlyOvertime}
+        onEditTime={onEditTime}
+        onAddManualRow={onAddManualRow}
+        totalHours={totalHours}
+      />
     </div>
   );
 }
 
 // ─────────────────────────────────────────────
-// 共通 計算結果エリア
+// 計算結果カード
 // ─────────────────────────────────────────────
 
-function ResultCard({
-  grossAmount,
-  payType,
-}: {
-  grossAmount: number;
-  payType: PayType;
-}) {
+function ResultCard({ grossAmount, payType }: { grossAmount: number; payType: PayType }) {
   const incomeTax = calculateIncomeTax(grossAmount);
   const effectiveRate = calcEffectiveRate(grossAmount);
   const hasValue = grossAmount > 0;
@@ -266,10 +478,7 @@ function ResultCard({
         <TrendingUp className="w-4 h-4 text-primary" />
         <span className="text-sm font-bold text-foreground">支給額・控除額シミュレーション</span>
       </div>
-
       <div className="border-t border-border/60" />
-
-      {/* 総支給額 */}
       <div className="space-y-1">
         <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
           {payType === "monthly" ? "月給制" : "時給制（時給 × 総労働時間）"}
@@ -281,43 +490,28 @@ function ResultCard({
           <span className="text-xs text-muted-foreground">（総支給額）</span>
         </div>
       </div>
-
-      {/* 源泉徴収税額 */}
       <div className="grid grid-cols-2 gap-3">
         <div className="bg-primary/5 border border-primary/20 rounded-xl px-4 py-3 space-y-1">
           <p className="text-xs font-semibold text-muted-foreground">源泉徴収税額（月額）</p>
-          <p className={cn(
-            "text-xl font-bold tabular-nums",
-            hasValue && incomeTax > 0 ? "text-primary" : "text-muted-foreground/40"
-          )}>
+          <p className={cn("text-xl font-bold tabular-nums", hasValue && incomeTax > 0 ? "text-primary" : "text-muted-foreground/40")}>
             {hasValue ? formatJPY(incomeTax) : "¥ —"}
           </p>
         </div>
         <div className="bg-muted/40 border border-border/60 rounded-xl px-4 py-3 space-y-1">
           <p className="text-xs font-semibold text-muted-foreground">実効税率</p>
-          <p className={cn(
-            "text-xl font-bold tabular-nums",
-            hasValue ? "text-foreground" : "text-muted-foreground/40"
-          )}>
+          <p className={cn("text-xl font-bold tabular-nums", hasValue ? "text-foreground" : "text-muted-foreground/40")}>
             {hasValue ? `${effectiveRate.toFixed(2)} %` : "— %"}
           </p>
         </div>
       </div>
-
-      {/* 手取り参考値 */}
       {hasValue && (
         <div className="flex items-center justify-between text-xs text-muted-foreground px-1 pt-1">
           <span>差引支給額（税引後・参考値）</span>
-          <span className="font-bold text-foreground tabular-nums">
-            {formatJPY(grossAmount - incomeTax)}
-          </span>
+          <span className="font-bold text-foreground tabular-nums">{formatJPY(grossAmount - incomeTax)}</span>
         </div>
       )}
-
       {hasValue && grossAmount < 88_000 && (
-        <p className="text-xs text-muted-foreground px-1">
-          月額 88,000 円未満のため源泉徴収なし
-        </p>
+        <p className="text-xs text-muted-foreground px-1">月額 88,000 円未満のため源泉徴収なし</p>
       )}
     </div>
   );
@@ -328,42 +522,89 @@ function ResultCard({
 // ─────────────────────────────────────────────
 
 export function PayrollTab() {
-  // ── 給与体系切り替え ──
   const [payType, setPayType] = useState<PayType>("monthly");
-
-  // ── 月給制 ──
   const [monthlySalaryInput, setMonthlySalaryInput] = useState("");
-
-  // ── 時給制 ──
   const [hourlyRateInput, setHourlyRateInput] = useState("");
-  const [timecardRows, setTimecardRows] = useState<TimecardRow[]>(INITIAL_TIMECARD);
+  const [timecardRows, setTimecardRows] = useState<TimecardRow[]>(INITIAL_ROWS);
+  const [ocrState, setOcrState] = useState<OcrState>("idle");
 
-  // タイムカード: 朝残業スイッチ切替
+  // ── OCR ファイル選択 → 疑似ローディング → ダミー結果反映 ──
+  const handleFileSelect = (_file: File) => {
+    setOcrState("loading");
+    setTimeout(() => {
+      setTimecardRows(OCR_RESULT_ROWS.map((r) => ({ ...r })));
+      setOcrState("done");
+    }, 2500);
+  };
+
+  // ── 朝残業トグル ──
   const handleToggleEarlyOvertime = (id: string, checked: boolean) => {
+    setTimecardRows((prev) => prev.map((r) => r.id === id ? { ...r, earlyOvertime: checked } : r));
+  };
+
+  // ── エラー行・手動行の時刻手修正 ──
+  const handleEditTime = (id: string, field: "editStart" | "editEnd", value: string) => {
     setTimecardRows((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, earlyOvertime: checked } : r))
+      prev.map((r) => {
+        if (r.id !== id) return r;
+        const updated = { ...r, [field]: value };
+        // 両方入力済みになったらステータスを success に昇格
+        const bothFilled =
+          (field === "editStart" ? value : r.editStart) &&
+          (field === "editEnd"   ? value : r.editEnd);
+        if (bothFilled) {
+          const newStart = field === "editStart" ? value : r.editStart;
+          const newEnd   = field === "editEnd"   ? value : r.editEnd;
+          return {
+            ...updated,
+            ocrStatus: "success" as OcrStatus,
+            ocrStart: newStart,
+            ocrEnd: newEnd,
+            stdStart: newStart,
+            stdEnd: newEnd,
+          };
+        }
+        return updated;
+      })
     );
   };
 
-  // 当月総労働時間（表示4行分）
+  // ── 手動行追加 ──
+  const handleAddManualRow = () => {
+    const today = new Date();
+    const label = `${today.getMonth() + 1}/${today.getDate()}`;
+    manualRowCounter += 1;
+    setTimecardRows((prev) => [
+      ...prev,
+      {
+        id: `m${manualRowCounter}`,
+        date: label,
+        ocrStatus: "manual",
+        ocrStart: "", ocrEnd: "",
+        editStart: "", editEnd: "",
+        stdStart: "--:--", stdEnd: "--:--",
+        earlyOvertime: false,
+      },
+    ]);
+  };
+
+  // ── 総労働時間（計上時間ベース） ──
   const totalHours = timecardRows.reduce((sum, row) => {
+    const needsInput = row.ocrStatus === "error" || row.ocrStatus === "manual";
+    if (needsInput) return sum + calcHours(row.editStart, row.editEnd);
     const start = row.earlyOvertime ? row.ocrStart : row.stdStart;
     return sum + calcHours(start, row.stdEnd);
   }, 0);
 
-  // ── 総支給額の計算 ──
+  // ── 総支給額 ──
   const monthlyRaw = parseInt(monthlySalaryInput.replace(/[^0-9]/g, ""), 10) || 0;
-  const hourlyRaw = parseInt(hourlyRateInput.replace(/[^0-9]/g, ""), 10) || 0;
-  // 時給制: 表示分の時間 + 固定ダミー残り（全体160時間）
+  const hourlyRaw  = parseInt(hourlyRateInput.replace(/[^0-9]/g, ""), 10) || 0;
   const DUMMY_TOTAL_HOURS = 160;
-  const grossAmount =
-    payType === "monthly"
-      ? monthlyRaw
-      : Math.round(hourlyRaw * DUMMY_TOTAL_HOURS);
+  const grossAmount = payType === "monthly" ? monthlyRaw : Math.round(hourlyRaw * DUMMY_TOTAL_HOURS);
 
   return (
     <div className="space-y-6 max-w-xl">
-      {/* ── ヘッダー + 給与体系ピル ── */}
+      {/* ヘッダー + ピルトグル */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
@@ -377,28 +618,29 @@ export function PayrollTab() {
         <PayTypePills value={payType} onChange={setPayType} />
       </div>
 
-      {/* ── 入力エリア（体系別） ── */}
+      {/* 入力エリア */}
       <div className="bg-card border border-border rounded-2xl p-5 shadow-sm space-y-5">
         {payType === "monthly" ? (
-          <MonthlyInput
-            value={monthlySalaryInput}
-            onChange={setMonthlySalaryInput}
-          />
+          <MonthlyInput value={monthlySalaryInput} onChange={setMonthlySalaryInput} />
         ) : (
           <HourlySection
             hourlyRate={hourlyRateInput}
             onHourlyRateChange={setHourlyRateInput}
             rows={timecardRows}
+            ocrState={ocrState}
+            onFileSelect={handleFileSelect}
             onToggleEarlyOvertime={handleToggleEarlyOvertime}
+            onEditTime={handleEditTime}
+            onAddManualRow={handleAddManualRow}
             totalHours={totalHours}
           />
         )}
       </div>
 
-      {/* ── 計算結果カード ── */}
+      {/* 計算結果 */}
       <ResultCard grossAmount={grossAmount} payType={payType} />
 
-      {/* ── 注記 ── */}
+      {/* 注記 */}
       <div className="flex items-start gap-2 text-xs text-muted-foreground">
         <Info className="w-4 h-4 flex-shrink-0 mt-0.5 text-primary/40" />
         <p>
