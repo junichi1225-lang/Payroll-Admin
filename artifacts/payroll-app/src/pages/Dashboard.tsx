@@ -342,7 +342,11 @@ export default function Dashboard() {
                       transition={{ duration: 0.18 }}
                     >
                       {activeTab === "payroll" ? (
-                        <PayrollTab key={selectedEmployeeId} />
+                        <PayrollTab
+                          key={selectedEmployeeId}
+                          currentDate={currentDate}
+                          employeeId={selectedEmployeeId}
+                        />
                       ) : (
                         <EmployeeInfoTab key={selectedEmployeeId} employee={selectedEmployee} />
                       )}
