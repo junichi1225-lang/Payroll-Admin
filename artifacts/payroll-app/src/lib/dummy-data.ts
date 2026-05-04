@@ -3,24 +3,40 @@ export type EmployeeStatus = "在籍中" | "休職中" | "退職";
 export type EmployeeColor = "blue" | "green" | "rose" | "amber" | "purple" | "teal";
 export type TimecardOcrStatus = "success" | "error" | "manual";
 export type RoundingType = "1min" | "15min" | "snap";
+export type DayOfWeek = "Sunday" | "Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday" | "Saturday";
+export type HolidayType = "weekday" | "legal_holiday" | "scheduled_holiday";
 
 // ─────────────────────────────────────────────
-// 職場マスタ
+// 職場マスタ DB
 // ─────────────────────────────────────────────
 
 export interface WorkplaceDef {
-  label: string;
-  breakMinutes: number;
-  color: string;          // Tailwind classes
-  workStart: string;      // 始業 "09:00"
-  workEnd: string;        // 終業 "18:00"
-  rounding: RoundingType;
+  id: string;                       // 'w1', 'w2', 'wp_xxx'
+  name: string;                     // 職場名
+  color: string;                    // Tailwind classes
+  defaultStartTime: string;         // 所定始業 "09:00"
+  defaultEndTime: string;           // 所定終業 "18:00"
+  defaultRestMinutes: number;       // 既定休憩(分)
+  roundingRule: RoundingType;
+  legalHoliday: DayOfWeek;          // 法定休日(週1日)
+  scheduledHoliday: DayOfWeek[];    // 所定休日
 }
 
 export const DEFAULT_WORKPLACES: Record<string, WorkplaceDef> = {
-  A: { label: "職場A", breakMinutes: 60, color: "text-blue-600 bg-blue-50 border-blue-200", workStart: "09:00", workEnd: "18:00", rounding: "1min" },
-  B: { label: "職場B", breakMinutes: 45, color: "text-violet-600 bg-violet-50 border-violet-200", workStart: "09:00", workEnd: "17:30", rounding: "15min" },
-  C: { label: "職場C", breakMinutes: 30, color: "text-teal-600 bg-teal-50 border-teal-200", workStart: "10:00", workEnd: "19:00", rounding: "snap" },
+  w1: {
+    id: "w1", name: "職場A",
+    color: "text-blue-600 bg-blue-50 border-blue-200",
+    defaultStartTime: "09:00", defaultEndTime: "18:00",
+    defaultRestMinutes: 60, roundingRule: "1min",
+    legalHoliday: "Sunday", scheduledHoliday: ["Saturday"],
+  },
+  w2: {
+    id: "w2", name: "職場B",
+    color: "text-violet-600 bg-violet-50 border-violet-200",
+    defaultStartTime: "10:00", defaultEndTime: "19:00",
+    defaultRestMinutes: 45, roundingRule: "15min",
+    legalHoliday: "Sunday", scheduledHoliday: ["Saturday"],
+  },
 };
 
 export const NEW_WORKPLACE_COLORS = [

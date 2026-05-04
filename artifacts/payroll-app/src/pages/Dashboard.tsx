@@ -180,6 +180,9 @@ export default function Dashboard() {
   const handleAddWorkplace = (key: string, def: WorkplaceDef) => {
     setWorkplaces((prev) => ({ ...prev, [key]: def }));
   };
+  const handleUpdateWorkplace = (id: string, def: WorkplaceDef) => {
+    setWorkplaces((prev) => ({ ...prev, [id]: { ...def, id } }));
+  };
 
   // Add employee dialog state
   const [addDialogOpen, setAddDialogOpen] = useState(false);
@@ -354,6 +357,7 @@ export default function Dashboard() {
                           employeeId={selectedEmployeeId}
                           workplaces={workplaces}
                           onAddWorkplace={handleAddWorkplace}
+                          onUpdateWorkplace={handleUpdateWorkplace}
                         />
                       ) : (
                         <EmployeeInfoTab key={selectedEmployeeId} employee={selectedEmployee} />

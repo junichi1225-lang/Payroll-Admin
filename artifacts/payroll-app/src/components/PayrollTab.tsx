@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, Fragment } from "react";
+import { useState, useRef, useEffect, Fragment, useMemo } from "react";
 import { calculateIncomeTax, calcEffectiveRate } from "@/lib/taxCalculator";
 import {
   getTimecardEntries,
@@ -6,6 +6,8 @@ import {
   TimecardOcrStatus,
   WorkplaceDef,
   RoundingType,
+  DayOfWeek,
+  HolidayType,
   NEW_WORKPLACE_COLORS,
 } from "@/lib/dummy-data";
 import { Switch } from "@/components/ui/switch";
@@ -19,7 +21,8 @@ import { cn } from "@/lib/utils";
 import {
   Calculator, Clock, Info, TrendingUp, Upload, Loader2,
   CheckCircle2, AlertCircle, Plus, ScanLine, ChevronDown,
-  CalendarDays, Moon, Sunrise, MapPin, PencilLine,
+  CalendarDays, Moon, Sunrise, MapPin, PencilLine, Pencil,
+  Briefcase, Zap, CalendarOff,
 } from "lucide-react";
 
 // ─────────────────────────────────────────────
@@ -35,19 +38,32 @@ function toDisplayValue(digits: string): string {
   return parseInt(digits, 10).toLocaleString("ja-JP");
 }
 
+function toMin(t: string): number {
+  if (!t || t === "--:--") return -1;
+  const [h, m] = t.split(":").map(Number);
+  return h * 60 + m;
+}
+
 function calcHours(start: string, end: string): number {
-  if (!start || !end || start === "--:--" || end === "--:--") return 0;
-  const [sh, sm] = start.split(":").map(Number);
-  const [eh, em] = end.split(":").map(Number);
-  return Math.max(0, (eh * 60 + em - (sh * 60 + sm)) / 60);
+  const s = toMin(start);
+  let e = toMin(end);
+  if (s < 0 || e < 0) return 0;
+  if (e <= s) e += 1440; // 日跨ぎ補正
+  return (e - s) / 60;
 }
 
 function monthLabel(date: Date): string {
   return `${date.getFullYear()}年${date.getMonth() + 1}月`;
 }
 
+const DOW_LIST: DayOfWeek[] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const DOW_JP: Record<DayOfWeek, string> = {
+  Sunday: "日", Monday: "月", Tuesday: "火", Wednesday: "水",
+  Thursday: "木", Friday: "金", Saturday: "土",
+};
+
 const ADD_WORKPLACE_VALUE = "__add_new_workplace__";
-const DEFAULT_WP_KEY = "A";
+const DEFAULT_WP_KEY = "w1";
 
 const ROUNDING_LABELS: Record<RoundingType, string> = {
   "1min": "1分単位",
@@ -55,40 +71,138 @@ const ROUNDING_LABELS: Record<RoundingType, string> = {
   "snap": "所定時間にスナップ",
 };
 
+const HOLIDAY_LABELS: Record<HolidayType, string> = {
+  weekday: "平日",
+  legal_holiday: "法定休日",
+  scheduled_holiday: "所定休日",
+};
+
+const HOLIDAY_BADGE_STYLE: Record<HolidayType, string> = {
+  weekday: "text-slate-600 bg-slate-100 border-slate-200",
+  legal_holiday: "text-rose-700 bg-rose-50 border-rose-200",
+  scheduled_holiday: "text-orange-700 bg-orange-50 border-orange-200",
+};
+
+// rowDate "M/D" + year → Date
+function getRowDate(year: number, dateStr: string): Date {
+  const m = dateStr.match(/^(\d+)\/(\d+)/);
+  if (!m) return new Date(year, 0, 1);
+  return new Date(year, parseInt(m[1], 10) - 1, parseInt(m[2], 10));
+}
+
+function detectHoliday(date: Date, wp: WorkplaceDef): HolidayType {
+  const dow = DOW_LIST[date.getDay()];
+  if (dow === wp.legalHoliday) return "legal_holiday";
+  if (wp.scheduledHoliday.includes(dow)) return "scheduled_holiday";
+  return "weekday";
+}
+
+// 22:00–翌05:00 と [start, end] の重なり(分)
+function calcLateNightMin(start: string, end: string): number {
+  const s = toMin(start);
+  let e = toMin(end);
+  if (s < 0 || e < 0) return 0;
+  if (e <= s) e += 1440;
+  // 22:00–29:00 (1320–1740) を想定。前日帯も拾うため 22:00 までの 0:00–05:00 区間を別途加算。
+  const overnight = Math.max(0, Math.min(e, 1740) - Math.max(s, 1320));
+  const earlyMorning = Math.max(0, Math.min(e, 300) - Math.max(s, 0));
+  return overnight + earlyMorning;
+}
+
 // ─────────────────────────────────────────────
-// タイムカード行型（UI ステート込み）
+// 5区分労働時間バケット
+// ─────────────────────────────────────────────
+
+interface TimeBuckets {
+  basic: number;            // 平日所定内
+  overtime: number;         // 1日8h超
+  earlyOvertime: number;    // 朝残業
+  lateNight: number;        // 22:00–05:00
+  legalHolidayWork: number; // 法定休日労働
+  scheduledHolidayWork: number; // 所定休日労働
+}
+
+const EMPTY_BUCKETS: TimeBuckets = {
+  basic: 0, overtime: 0, earlyOvertime: 0, lateNight: 0,
+  legalHolidayWork: 0, scheduledHolidayWork: 0,
+};
+
+function addBuckets(a: TimeBuckets, b: TimeBuckets): TimeBuckets {
+  return {
+    basic: a.basic + b.basic,
+    overtime: a.overtime + b.overtime,
+    earlyOvertime: a.earlyOvertime + b.earlyOvertime,
+    lateNight: a.lateNight + b.lateNight,
+    legalHolidayWork: a.legalHolidayWork + b.legalHolidayWork,
+    scheduledHolidayWork: a.scheduledHolidayWork + b.scheduledHolidayWork,
+  };
+}
+
+function calcRowBuckets(
+  effectiveStart: string, effectiveEnd: string,
+  ocrStart: string, stdStart: string,
+  breakMinutes: number, earlyOvertime: boolean, holiday: HolidayType,
+): TimeBuckets {
+  const grossMin = (calcHours(effectiveStart, effectiveEnd) * 60) | 0;
+  if (grossMin <= 0) return EMPTY_BUCKETS;
+  const workMin = Math.max(0, grossMin - breakMinutes);
+  const earlyMin = earlyOvertime
+    ? Math.max(0, toMin(stdStart) - toMin(ocrStart))
+    : 0;
+  const lateNightMin = calcLateNightMin(effectiveStart, effectiveEnd);
+
+  const buckets: TimeBuckets = { ...EMPTY_BUCKETS };
+
+  if (holiday === "legal_holiday") {
+    buckets.legalHolidayWork = workMin / 60;
+  } else if (holiday === "scheduled_holiday") {
+    buckets.scheduledHolidayWork = workMin / 60;
+  } else {
+    buckets.earlyOvertime = earlyMin / 60;
+    const remaining = Math.max(0, workMin - earlyMin);
+    buckets.basic = Math.min(8 * 60, remaining) / 60;
+    buckets.overtime = Math.max(0, remaining - 8 * 60) / 60;
+  }
+  buckets.lateNight = lateNightMin / 60;
+  return buckets;
+}
+
+// ─────────────────────────────────────────────
+// タイムカード行型(UI ステート込み)
 // ─────────────────────────────────────────────
 
 type TimecardRow = TimecardEntry & {
   editStart: string;
   editEnd: string;
-  workplace: string;
+  workplaceId: string;
   breakMinutes: number;
   earlyOvertime: boolean;
   lateNightPremium: boolean;
   note: string;
   expanded: boolean;
-  timeManuallyEdited: boolean;   // OCRエラー行を手修正したフラグ
+  timeManuallyEdited: boolean;
+  holidayOverride: HolidayType | "auto";
 };
 
 function entryToRow(entry: TimecardEntry, defaultBreak: number): TimecardRow {
   return {
     ...entry,
     editStart: "", editEnd: "",
-    workplace: DEFAULT_WP_KEY,
+    workplaceId: DEFAULT_WP_KEY,
     breakMinutes: defaultBreak,
     earlyOvertime: false,
     lateNightPremium: false,
     note: "",
     expanded: false,
     timeManuallyEdited: false,
+    holidayOverride: "auto",
   };
 }
 
 let manualRowCounter = 0;
 
 // ─────────────────────────────────────────────
-// 給与体系ピルトグル
+// 給与体系ピルトグル / 月給入力 / OCRバナー (簡略)
 // ─────────────────────────────────────────────
 
 type PayType = "monthly" | "hourly";
@@ -109,10 +223,6 @@ function PayTypePills({ value, onChange }: { value: PayType; onChange: (v: PayTy
     </div>
   );
 }
-
-// ─────────────────────────────────────────────
-// 月給入力
-// ─────────────────────────────────────────────
 
 function MonthlyInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const hasValue = value.replace(/[^0-9]/g, "").length > 0;
@@ -136,10 +246,6 @@ function MonthlyInput({ value, onChange }: { value: string; onChange: (v: string
     </div>
   );
 }
-
-// ─────────────────────────────────────────────
-// OCR アップロードバナー
-// ─────────────────────────────────────────────
 
 type OcrState = "idle" | "loading" | "done";
 
@@ -181,6 +287,49 @@ function OcrUploadBanner({ ocrState, onFileSelect }: { ocrState: OcrState; onFil
 }
 
 // ─────────────────────────────────────────────
+// 5区分サマリーカード
+// ─────────────────────────────────────────────
+
+function BucketSummary({ buckets }: { buckets: TimeBuckets }) {
+  const items = [
+    { label: "基本労働", value: buckets.basic, icon: Briefcase, style: "text-slate-700 bg-slate-50 border-slate-200" },
+    { label: "時間外", value: buckets.overtime, icon: Zap, style: "text-orange-700 bg-orange-50 border-orange-200" },
+    { label: "朝残業", value: buckets.earlyOvertime, icon: Sunrise, style: "text-amber-700 bg-amber-50 border-amber-200" },
+    { label: "深夜労働", value: buckets.lateNight, icon: Moon, style: "text-indigo-700 bg-indigo-50 border-indigo-200" },
+  ];
+  const holidayTotal = buckets.legalHolidayWork + buckets.scheduledHolidayWork;
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <TrendingUp className="w-4 h-4 text-muted-foreground" />
+        <span className="text-sm font-semibold text-foreground">5区分・月間労働時間の内訳</span>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+        {items.map(({ label, value, icon: Icon, style }) => (
+          <div key={label} className={cn("rounded-xl border px-3 py-2.5 space-y-1", style)}>
+            <div className="flex items-center gap-1.5">
+              <Icon className="w-3.5 h-3.5" />
+              <span className="text-[10px] font-semibold uppercase tracking-wide opacity-80">{label}</span>
+            </div>
+            <p className="text-base font-bold tabular-nums">{value.toFixed(1)}<span className="text-[10px] font-medium opacity-70 ml-0.5">h</span></p>
+          </div>
+        ))}
+        <div className="rounded-xl border px-3 py-2.5 space-y-1 text-rose-700 bg-rose-50 border-rose-200">
+          <div className="flex items-center gap-1.5">
+            <CalendarOff className="w-3.5 h-3.5" />
+            <span className="text-[10px] font-semibold uppercase tracking-wide opacity-80">休日労働</span>
+          </div>
+          <p className="text-base font-bold tabular-nums">{holidayTotal.toFixed(1)}<span className="text-[10px] font-medium opacity-70 ml-0.5">h</span></p>
+          <p className="text-[9px] opacity-70 leading-tight">
+            法定 {buckets.legalHolidayWork.toFixed(1)}h ・ 所定 {buckets.scheduledHolidayWork.toFixed(1)}h
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
 // タイムカードテーブル
 // ─────────────────────────────────────────────
 
@@ -188,21 +337,24 @@ interface TimecardTableProps {
   rows: TimecardRow[];
   currentDate: Date;
   totalHours: number;
+  monthlyBuckets: TimeBuckets;
   workplaces: Record<string, WorkplaceDef>;
-  onWorkplaceChange: (id: string, wp: string) => void;
+  onWorkplaceChange: (id: string, wpId: string) => void;
+  onEditWorkplace: (wpId: string) => void;
   onBreakMinutesChange: (id: string, mins: number) => void;
   onEditTime: (id: string, field: "editStart" | "editEnd", value: string) => void;
   onToggleEarlyOvertime: (id: string, checked: boolean) => void;
   onToggleLateNight: (id: string, checked: boolean) => void;
   onNoteChange: (id: string, note: string) => void;
+  onHolidayOverrideChange: (id: string, value: HolidayType | "auto") => void;
   onToggleExpanded: (id: string) => void;
   onAddManualRow: () => void;
 }
 
 function TimecardTable({
-  rows, currentDate, totalHours, workplaces,
-  onWorkplaceChange, onBreakMinutesChange, onEditTime,
-  onToggleEarlyOvertime, onToggleLateNight, onNoteChange,
+  rows, currentDate, totalHours, monthlyBuckets, workplaces,
+  onWorkplaceChange, onEditWorkplace, onBreakMinutesChange, onEditTime,
+  onToggleEarlyOvertime, onToggleLateNight, onNoteChange, onHolidayOverrideChange,
   onToggleExpanded, onAddManualRow,
 }: TimecardTableProps) {
   const errorCount = rows.filter(
@@ -211,13 +363,13 @@ function TimecardTable({
 
   const COL_SPAN = 7;
   const fallbackWp: WorkplaceDef = workplaces[DEFAULT_WP_KEY] ?? Object.values(workplaces)[0] ?? {
-    label: "未設定", breakMinutes: 0, color: "text-muted-foreground bg-muted border-border",
-    workStart: "09:00", workEnd: "18:00", rounding: "1min",
+    id: "fallback", name: "未設定", color: "text-muted-foreground bg-muted border-border",
+    defaultStartTime: "09:00", defaultEndTime: "18:00", defaultRestMinutes: 0,
+    roundingRule: "1min", legalHoliday: "Sunday", scheduledHoliday: [],
   };
 
   return (
     <div className="space-y-2">
-      {/* テーブルヘッダー */}
       <div className="flex items-center gap-2">
         <Clock className="w-4 h-4 text-muted-foreground" />
         <span className="text-sm font-semibold text-foreground">{monthLabel(currentDate)} のタイムカード</span>
@@ -229,7 +381,6 @@ function TimecardTable({
         )}
       </div>
 
-      {/* データなし */}
       {rows.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border py-10 text-center space-y-1.5">
           <CalendarDays className="w-8 h-8 text-muted-foreground/30 mx-auto" />
@@ -238,12 +389,12 @@ function TimecardTable({
         </div>
       ) : (
         <div className="rounded-xl border border-border overflow-x-auto">
-          <table className="w-full text-sm min-w-[640px]">
+          <table className="w-full text-sm min-w-[720px]">
             <thead>
               <tr className="bg-muted/50 border-b border-border">
                 <th className="px-2 py-2.5 w-7"></th>
-                <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground w-[68px]">日付</th>
-                <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground w-[110px]">職場</th>
+                <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground w-[110px]">日付・属性</th>
+                <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground w-[150px]">職場</th>
                 <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground">OCR打刻</th>
                 <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground">計上時間</th>
                 <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground w-[82px]">休憩(分)</th>
@@ -263,23 +414,28 @@ function TimecardTable({
                   : row.earlyOvertime ? row.ocrStart : row.stdStart;
                 const effectiveEnd = needsInput ? (row.editEnd || "--:--") : row.stdEnd;
 
+                const wp = workplaces[row.workplaceId] ?? fallbackWp;
+                const breakManuallyEdited = row.breakMinutes !== wp.defaultRestMinutes;
+
+                // 休日属性: override > auto detect
+                const rowDate = getRowDate(row.year, row.date);
+                const autoHoliday = detectHoliday(rowDate, wp);
+                const holiday = row.holidayOverride === "auto" ? autoHoliday : row.holidayOverride;
+                const holidayManual = row.holidayOverride !== "auto" && row.holidayOverride !== autoHoliday;
+
                 const gross = calcHours(effectiveStart, effectiveEnd);
                 const net = gross > 0 ? Math.max(0, gross - row.breakMinutes / 60) : 0;
-
-                const wp = workplaces[row.workplace] ?? fallbackWp;
-                const breakManuallyEdited = row.breakMinutes !== wp.breakMinutes;
 
                 const rowBg = row.expanded ? "bg-primary/[.03]"
                   : isError && !hasEditedBoth ? "bg-red-50/60"
                   : isManual && !hasEditedBoth ? "bg-blue-50/40"
+                  : holiday === "legal_holiday" ? "bg-rose-50/30 hover:bg-rose-50/50"
+                  : holiday === "scheduled_holiday" ? "bg-orange-50/30 hover:bg-orange-50/50"
                   : "bg-background hover:bg-muted/20";
 
                 return (
                   <Fragment key={row.id}>
-                    {/* ── メイン行 ── */}
                     <tr className={cn("transition-colors", rowBg)}>
-
-                      {/* ステータスアイコン */}
                       <td className="px-2 py-2.5 text-center">
                         {resolved
                           ? <CheckCircle2 className="w-4 h-4 text-green-500 mx-auto" />
@@ -289,44 +445,69 @@ function TimecardTable({
                         }
                       </td>
 
-                      {/* 日付 */}
-                      <td className="px-2 py-2.5 text-xs font-medium text-foreground whitespace-nowrap">
-                        {row.date}
+                      {/* 日付 + 休日属性バッジ */}
+                      <td className="px-2 py-2.5 align-top">
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-xs font-medium text-foreground whitespace-nowrap">
+                            {row.date}
+                            <span className="ml-1 text-[10px] text-muted-foreground">({DOW_JP[DOW_LIST[rowDate.getDay()]]})</span>
+                          </span>
+                          <span
+                            className={cn(
+                              "inline-flex items-center gap-0.5 self-start text-[9px] font-semibold border rounded px-1 py-0.5 leading-none",
+                              HOLIDAY_BADGE_STYLE[holiday],
+                            )}
+                            title={holidayManual ? "手動で上書き済み" : "曜日から自動判定"}
+                          >
+                            {HOLIDAY_LABELS[holiday]}
+                            {holidayManual && <PencilLine className="w-2 h-2" />}
+                          </span>
+                        </div>
                       </td>
 
-                      {/* 職場選択 */}
+                      {/* 職場選択 + 編集 */}
                       <td className="px-2 py-2.5">
-                        <Select
-                          value={row.workplace}
-                          onValueChange={(v) => onWorkplaceChange(row.id, v)}
-                        >
-                          <SelectTrigger className={cn(
-                            "h-7 text-xs px-2 w-[100px] border font-semibold rounded-lg",
-                            wp.color
-                          )}>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {Object.entries(workplaces).map(([key, def]) => (
-                              <SelectItem key={key} value={key} className="text-xs">
-                                <span className="font-semibold">{def.label}</span>
-                                <span className="ml-2 text-muted-foreground">休憩{def.breakMinutes}分</span>
+                        <div className="flex items-center gap-1">
+                          <Select
+                            value={row.workplaceId}
+                            onValueChange={(v) => onWorkplaceChange(row.id, v)}
+                          >
+                            <SelectTrigger className={cn(
+                              "h-7 text-xs px-2 w-[110px] border font-semibold rounded-lg",
+                              wp.color
+                            )}>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {Object.values(workplaces).map((def) => (
+                                <SelectItem key={def.id} value={def.id} className="text-xs">
+                                  <span className="font-semibold">{def.name}</span>
+                                  <span className="ml-2 text-muted-foreground">休憩{def.defaultRestMinutes}分</span>
+                                </SelectItem>
+                              ))}
+                              <SelectSeparator />
+                              <SelectItem
+                                value={ADD_WORKPLACE_VALUE}
+                                className="text-xs text-primary font-semibold focus:bg-primary/10"
+                              >
+                                <span className="inline-flex items-center gap-1">
+                                  <Plus className="w-3 h-3" />新しい職場を登録
+                                </span>
                               </SelectItem>
-                            ))}
-                            <SelectSeparator />
-                            <SelectItem
-                              value={ADD_WORKPLACE_VALUE}
-                              className="text-xs text-primary font-semibold focus:bg-primary/10"
-                            >
-                              <span className="inline-flex items-center gap-1">
-                                <Plus className="w-3 h-3" />新しい職場を登録する
-                              </span>
-                            </SelectItem>
-                          </SelectContent>
-                        </Select>
+                            </SelectContent>
+                          </Select>
+                          <button
+                            onClick={() => onEditWorkplace(row.workplaceId)}
+                            aria-label={`${wp.name}を編集`}
+                            title={`${wp.name}のマスタ設定を編集`}
+                            className="w-6 h-6 inline-flex items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </button>
+                        </div>
                       </td>
 
-                      {/* OCR打刻 / エラー行インプット */}
+                      {/* OCR打刻 */}
                       <td className={cn(
                         "px-2 py-2.5 transition-colors",
                         row.timeManuallyEdited && "bg-yellow-50/80"
@@ -399,11 +580,11 @@ function TimecardTable({
                         )}
                       </td>
 
-                      {/* 休憩時間 */}
+                      {/* 休憩 */}
                       <td className="px-2 py-2.5">
                         <div className="flex items-center gap-1">
                           <input
-                            type="number" min={0} max={120} step={15}
+                            type="number" min={0} max={240} step={15}
                             value={row.breakMinutes}
                             onChange={(e) => onBreakMinutesChange(row.id, parseInt(e.target.value, 10) || 0)}
                             className={cn(
@@ -413,7 +594,7 @@ function TimecardTable({
                                 ? "border-yellow-400 bg-yellow-50 text-yellow-900 focus:ring-yellow-200 focus:border-yellow-500"
                                 : "border-border bg-background focus:ring-primary/20 focus:border-primary/50"
                             )}
-                            title={breakManuallyEdited ? `${wp.label}の既定値（${wp.breakMinutes}分）から手修正` : undefined}
+                            title={breakManuallyEdited ? `${wp.name}の既定値(${wp.defaultRestMinutes}分)から手修正` : undefined}
                           />
                           <span className="text-xs text-muted-foreground">分</span>
                         </div>
@@ -437,7 +618,7 @@ function TimecardTable({
                       </td>
                     </tr>
 
-                    {/* ── 詳細パネル行（アコーディオン） ── */}
+                    {/* 詳細パネル */}
                     <tr className={cn(rowBg)}>
                       <td colSpan={COL_SPAN} className="p-0 border-0">
                         <div
@@ -448,10 +629,10 @@ function TimecardTable({
                           )}
                         >
                           <div className="overflow-hidden">
-                            <div className="px-4 py-3 border-t border-border/40 bg-muted/30">
-                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                            <div className="px-4 py-3 border-t border-border/40 bg-muted/30 space-y-3">
+                              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
 
-                                {/* 朝残業トグル */}
+                                {/* 朝残業 */}
                                 <div className="flex items-start gap-3">
                                   <div className="mt-0.5 w-8 h-8 rounded-lg bg-amber-50 border border-amber-200 flex items-center justify-center flex-shrink-0">
                                     <Sunrise className="w-4 h-4 text-amber-600" />
@@ -459,7 +640,7 @@ function TimecardTable({
                                   <div className="flex items-center justify-between gap-2 flex-1 min-w-0">
                                     <div>
                                       <p className="text-xs font-semibold text-foreground">朝残業(早出)</p>
-                                      <p className="text-[10px] text-muted-foreground">始業前を労働時間に含める</p>
+                                      <p className="text-[10px] text-muted-foreground">始業前を朝残業に算入</p>
                                     </div>
                                     <Switch
                                       checked={row.earlyOvertime}
@@ -469,7 +650,7 @@ function TimecardTable({
                                   </div>
                                 </div>
 
-                                {/* 深夜割増トグル */}
+                                {/* 深夜割増 */}
                                 <div className="flex items-start gap-3">
                                   <div className="mt-0.5 w-8 h-8 rounded-lg bg-indigo-50 border border-indigo-200 flex items-center justify-center flex-shrink-0">
                                     <Moon className="w-4 h-4 text-indigo-600" />
@@ -477,7 +658,7 @@ function TimecardTable({
                                   <div className="flex items-center justify-between gap-2 flex-1 min-w-0">
                                     <div>
                                       <p className="text-xs font-semibold text-foreground">深夜割増(22時以降)</p>
-                                      <p className="text-[10px] text-muted-foreground">25%割増賃金を適用する</p>
+                                      <p className="text-[10px] text-muted-foreground">25%割増を適用</p>
                                     </div>
                                     <Switch
                                       checked={row.lateNightPremium}
@@ -485,6 +666,25 @@ function TimecardTable({
                                       className="data-[state=checked]:bg-indigo-500 flex-shrink-0"
                                     />
                                   </div>
+                                </div>
+
+                                {/* 休日属性 上書き */}
+                                <div className="space-y-1.5">
+                                  <p className="text-xs font-semibold text-foreground">休日属性(強制上書き)</p>
+                                  <Select
+                                    value={row.holidayOverride}
+                                    onValueChange={(v) => onHolidayOverrideChange(row.id, v as HolidayType | "auto")}
+                                  >
+                                    <SelectTrigger className="h-8 text-xs">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="auto" className="text-xs">自動判定 ({HOLIDAY_LABELS[autoHoliday]})</SelectItem>
+                                      <SelectItem value="weekday" className="text-xs">平日</SelectItem>
+                                      <SelectItem value="legal_holiday" className="text-xs">法定休日</SelectItem>
+                                      <SelectItem value="scheduled_holiday" className="text-xs">所定休日</SelectItem>
+                                    </SelectContent>
+                                  </Select>
                                 </div>
 
                                 {/* 備考 */}
@@ -500,9 +700,44 @@ function TimecardTable({
                                 </div>
 
                               </div>
-                              {/* インジケーター */}
-                              {(row.earlyOvertime || row.lateNightPremium || breakManuallyEdited || row.timeManuallyEdited) && (
-                                <div className="flex flex-wrap gap-2 mt-3 pt-3 border-t border-border/40">
+
+                              {/* 行ごとの5区分内訳 */}
+                              {(() => {
+                                const b = calcRowBuckets(
+                                  effectiveStart, effectiveEnd, row.ocrStart, row.stdStart,
+                                  row.breakMinutes, row.earlyOvertime, holiday,
+                                );
+                                const items: { label: string; value: number }[] = [
+                                  { label: "基本", value: b.basic },
+                                  { label: "時間外", value: b.overtime },
+                                  { label: "朝残業", value: b.earlyOvertime },
+                                  { label: "深夜", value: b.lateNight },
+                                  { label: "法定休日", value: b.legalHolidayWork },
+                                  { label: "所定休日", value: b.scheduledHolidayWork },
+                                ];
+                                return (
+                                  <div className="flex flex-wrap gap-1.5 pt-2 border-t border-border/40">
+                                    <span className="text-[10px] font-semibold text-muted-foreground self-center mr-1">本日内訳:</span>
+                                    {items.map((it) => (
+                                      <span
+                                        key={it.label}
+                                        className={cn(
+                                          "text-[10px] font-medium border rounded px-1.5 py-0.5 tabular-nums",
+                                          it.value > 0
+                                            ? "text-foreground bg-background border-border"
+                                            : "text-muted-foreground/50 bg-muted/30 border-border/40"
+                                        )}
+                                      >
+                                        {it.label} {it.value.toFixed(1)}h
+                                      </span>
+                                    ))}
+                                  </div>
+                                );
+                              })()}
+
+                              {/* 手修正・適用中インジケーター */}
+                              {(row.earlyOvertime || row.lateNightPremium || breakManuallyEdited || row.timeManuallyEdited || holidayManual) && (
+                                <div className="flex flex-wrap gap-2">
                                   {row.earlyOvertime && (
                                     <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">
                                       <Sunrise className="w-3 h-3" />朝残業 適用中
@@ -515,12 +750,17 @@ function TimecardTable({
                                   )}
                                   {breakManuallyEdited && (
                                     <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-yellow-700 bg-yellow-50 border border-yellow-300 rounded-full px-2 py-0.5">
-                                      <PencilLine className="w-3 h-3" />休憩時間 手修正(既定 {wp.breakMinutes}分)
+                                      <PencilLine className="w-3 h-3" />休憩時間 手修正(既定 {wp.defaultRestMinutes}分)
                                     </span>
                                   )}
                                   {row.timeManuallyEdited && (
                                     <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-yellow-700 bg-yellow-50 border border-yellow-300 rounded-full px-2 py-0.5">
                                       <PencilLine className="w-3 h-3" />打刻 手修正
+                                    </span>
+                                  )}
+                                  {holidayManual && (
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-yellow-700 bg-yellow-50 border border-yellow-300 rounded-full px-2 py-0.5">
+                                      <PencilLine className="w-3 h-3" />休日属性 手動上書き
                                     </span>
                                   )}
                                 </div>
@@ -538,14 +778,17 @@ function TimecardTable({
         </div>
       )}
 
-      {/* 手動追加 */}
       <button onClick={onAddManualRow}
         className="w-full flex items-center justify-center gap-2 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted/40 rounded-lg border border-dashed border-border transition-colors"
       >
         <Plus className="w-3.5 h-3.5" />打刻行を手動で追加
       </button>
 
-      {/* 総労働時間 */}
+      {/* 5区分サマリー */}
+      <div className="pt-2">
+        <BucketSummary buckets={monthlyBuckets} />
+      </div>
+
       <div className="flex items-center justify-between px-3 py-2.5 bg-muted/40 rounded-xl border border-border/60">
         <span className="text-xs font-semibold text-muted-foreground">
           {monthLabel(currentDate)} 正味労働時間(休憩差引後)
@@ -563,9 +806,9 @@ function TimecardTable({
 function HourlySection(props: {
   hourlyRate: string; onHourlyRateChange: (v: string) => void;
   rows: TimecardRow[]; currentDate: Date; ocrState: OcrState;
-  onFileSelect: (f: File) => void; totalHours: number;
-} & Omit<TimecardTableProps, "rows" | "currentDate" | "totalHours">) {
-  const { hourlyRate, onHourlyRateChange, rows, currentDate, ocrState, onFileSelect, totalHours, ...tableProps } = props;
+  onFileSelect: (f: File) => void; totalHours: number; monthlyBuckets: TimeBuckets;
+} & Omit<TimecardTableProps, "rows" | "currentDate" | "totalHours" | "monthlyBuckets">) {
+  const { hourlyRate, onHourlyRateChange, rows, currentDate, ocrState, onFileSelect, totalHours, monthlyBuckets, ...tableProps } = props;
   const hasRate = hourlyRate.replace(/[^0-9]/g, "").length > 0;
   return (
     <div className="space-y-5">
@@ -587,7 +830,7 @@ function HourlySection(props: {
         </div>
       </div>
       <OcrUploadBanner ocrState={ocrState} onFileSelect={onFileSelect} />
-      <TimecardTable rows={rows} currentDate={currentDate} totalHours={totalHours} {...tableProps} />
+      <TimecardTable rows={rows} currentDate={currentDate} totalHours={totalHours} monthlyBuckets={monthlyBuckets} {...tableProps} />
     </div>
   );
 }
@@ -649,6 +892,187 @@ function ResultCard({ grossAmount, payType, currentDate }: { grossAmount: number
 }
 
 // ─────────────────────────────────────────────
+// 職場マスタ Dialog (新規 / 編集 兼用)
+// ─────────────────────────────────────────────
+
+interface WorkplaceDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  mode: "create" | "edit";
+  initial: WorkplaceDef | null;     // edit時の元データ / create時null
+  onSubmit: (def: Omit<WorkplaceDef, "color"> & { color?: string }) => void;
+}
+
+function WorkplaceDialog({ open, onOpenChange, mode, initial, onSubmit }: WorkplaceDialogProps) {
+  const [name, setName] = useState("");
+  const [start, setStart] = useState("09:00");
+  const [end, setEnd] = useState("18:00");
+  const [rest, setRest] = useState<number>(60);
+  const [rounding, setRounding] = useState<RoundingType>("1min");
+  const [legal, setLegal] = useState<DayOfWeek>("Sunday");
+  const [scheduled, setScheduled] = useState<DayOfWeek[]>(["Saturday"]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (mode === "edit" && initial) {
+      setName(initial.name);
+      setStart(initial.defaultStartTime);
+      setEnd(initial.defaultEndTime);
+      setRest(initial.defaultRestMinutes);
+      setRounding(initial.roundingRule);
+      setLegal(initial.legalHoliday);
+      setScheduled(initial.scheduledHoliday);
+    } else {
+      setName("");
+      setStart("09:00");
+      setEnd("18:00");
+      setRest(60);
+      setRounding("1min");
+      setLegal("Sunday");
+      setScheduled(["Saturday"]);
+    }
+  }, [open, mode, initial]);
+
+  const canSubmit = name.trim().length > 0 && !!start && !!end;
+
+  const toggleScheduled = (d: DayOfWeek) => {
+    setScheduled((prev) => prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]);
+  };
+
+  const handleSubmit = () => {
+    if (!canSubmit) return;
+    onSubmit({
+      id: initial?.id ?? "",
+      name: name.trim(),
+      defaultStartTime: start,
+      defaultEndTime: end,
+      defaultRestMinutes: rest,
+      roundingRule: rounding,
+      legalHoliday: legal,
+      scheduledHoliday: scheduled,
+      color: initial?.color,
+    });
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <MapPin className="w-4 h-4 text-primary" />
+            {mode === "create" ? "新しい職場を登録" : `「${initial?.name ?? ""}」を編集`}
+          </DialogTitle>
+          <DialogDescription>
+            職場ごとの所定労働時間・休憩・休日設定を登録します。変更は即座に全行へ反映されます。
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 py-2">
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-foreground" htmlFor="wp-name">
+              職場名 <span className="text-destructive">*</span>
+            </label>
+            <input
+              id="wp-name" type="text" value={name} autoFocus
+              onChange={(e) => setName(e.target.value)}
+              placeholder="例：渋谷店、本社オフィス"
+              className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-foreground">所定労働時間</label>
+            <div className="flex items-center gap-2">
+              <input type="time" value={start} onChange={(e) => setStart(e.target.value)} aria-label="始業時刻"
+                className="flex-1 px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50" />
+              <span className="text-muted-foreground text-sm">–</span>
+              <input type="time" value={end} onChange={(e) => setEnd(e.target.value)} aria-label="終業時刻"
+                className="flex-1 px-3 py-2.5 rounded-xl border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50" />
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-foreground" htmlFor="wp-rest">デフォルト休憩時間(分)</label>
+            <div className="flex items-center gap-2">
+              <input id="wp-rest" type="number" min={0} max={240} step={15} value={rest}
+                onChange={(e) => setRest(parseInt(e.target.value, 10) || 0)}
+                className="w-28 px-3 py-2.5 rounded-xl border border-border bg-background text-sm font-medium tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50" />
+              <span className="text-sm text-muted-foreground">分</span>
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-foreground">打刻の丸め設定</label>
+            <Select value={rounding} onValueChange={(v) => setRounding(v as RoundingType)}>
+              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {(Object.keys(ROUNDING_LABELS) as RoundingType[]).map((k) => (
+                  <SelectItem key={k} value={k}>{ROUNDING_LABELS[k]}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-foreground">法定休日(週1日)</label>
+            <Select value={legal} onValueChange={(v) => setLegal(v as DayOfWeek)}>
+              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {DOW_LIST.map((d) => (
+                  <SelectItem key={d} value={d}>{DOW_JP[d]}曜日</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-foreground">所定休日(複数選択可)</label>
+            <div className="flex flex-wrap gap-1.5">
+              {DOW_LIST.map((d) => {
+                const active = scheduled.includes(d);
+                const isLegal = d === legal;
+                return (
+                  <button
+                    key={d} type="button" disabled={isLegal}
+                    onClick={() => toggleScheduled(d)}
+                    className={cn(
+                      "w-9 h-9 rounded-lg border text-xs font-semibold transition-colors",
+                      isLegal
+                        ? "bg-rose-50 border-rose-200 text-rose-400 cursor-not-allowed"
+                        : active
+                        ? "bg-orange-100 border-orange-300 text-orange-700"
+                        : "bg-background border-border text-muted-foreground hover:bg-muted"
+                    )}
+                    title={isLegal ? "法定休日は所定休日に重複指定できません" : undefined}
+                  >
+                    {DOW_JP[d]}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter className="gap-2 mt-2">
+          <DialogClose asChild>
+            <button className="px-4 py-2 rounded-xl border border-border text-sm font-medium hover:bg-secondary transition-colors">
+              キャンセル
+            </button>
+          </DialogClose>
+          <button
+            onClick={handleSubmit}
+            disabled={!canSubmit}
+            className="px-5 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {mode === "create" ? "決定(登録)" : "更新を保存"}
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─────────────────────────────────────────────
 // メインコンポーネント
 // ─────────────────────────────────────────────
 
@@ -657,95 +1081,101 @@ interface PayrollTabProps {
   employeeId: string;
   workplaces: Record<string, WorkplaceDef>;
   onAddWorkplace: (key: string, def: WorkplaceDef) => void;
+  onUpdateWorkplace: (id: string, def: WorkplaceDef) => void;
 }
 
-export function PayrollTab({ currentDate, employeeId, workplaces, onAddWorkplace }: PayrollTabProps) {
+export function PayrollTab({ currentDate, employeeId, workplaces, onAddWorkplace, onUpdateWorkplace }: PayrollTabProps) {
   const [payType, setPayType] = useState<PayType>("monthly");
   const [monthlySalaryInput, setMonthlySalaryInput] = useState("");
   const [hourlyRateInput, setHourlyRateInput] = useState("");
   const [timecardRows, setTimecardRows] = useState<TimecardRow[]>([]);
   const [ocrState, setOcrState] = useState<OcrState>("idle");
 
-  // 職場登録 Dialog state
+  // Dialog state
   const [wpDialogOpen, setWpDialogOpen] = useState(false);
+  const [wpDialogMode, setWpDialogMode] = useState<"create" | "edit">("create");
   const [wpDialogRowId, setWpDialogRowId] = useState<string | null>(null);
-  const [newWpName, setNewWpName] = useState("");
-  const [newWpStart, setNewWpStart] = useState("09:00");
-  const [newWpEnd, setNewWpEnd] = useState("18:00");
-  const [newWpBreak, setNewWpBreak] = useState<number>(60);
-  const [newWpRounding, setNewWpRounding] = useState<RoundingType>("1min");
+  const [wpDialogEditId, setWpDialogEditId] = useState<string | null>(null);
 
-  // 月 / 従業員変更 → タイムカードリロード
+  // 月 / 従業員変更
   useEffect(() => {
     const year = currentDate.getFullYear();
     const month = currentDate.getMonth() + 1;
     const entries = getTimecardEntries(employeeId, year, month);
-    const defaultBreak = workplaces[DEFAULT_WP_KEY]?.breakMinutes ?? 60;
+    const defaultBreak = workplaces[DEFAULT_WP_KEY]?.defaultRestMinutes ?? 60;
     setTimecardRows(entries.map((e) => entryToRow(e, defaultBreak)));
     setOcrState("idle");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentDate, employeeId]);
 
-  // OCR
   const handleFileSelect = (_file: File) => {
     setOcrState("loading");
     setTimeout(() => {
       const year = currentDate.getFullYear();
       const month = currentDate.getMonth() + 1;
       const entries = getTimecardEntries(employeeId, year, month);
-      const defaultBreak = workplaces[DEFAULT_WP_KEY]?.breakMinutes ?? 60;
+      const defaultBreak = workplaces[DEFAULT_WP_KEY]?.defaultRestMinutes ?? 60;
       setTimecardRows(entries.map((e) => entryToRow(e, defaultBreak)));
       setOcrState("done");
     }, 2500);
   };
 
-  // 職場変更 — "__add_new_workplace__" ならダイアログを開く
   const handleWorkplaceChange = (id: string, value: string) => {
     if (value === ADD_WORKPLACE_VALUE) {
+      setWpDialogMode("create");
       setWpDialogRowId(id);
-      setNewWpName("");
-      setNewWpStart("09:00");
-      setNewWpEnd("18:00");
-      setNewWpBreak(60);
-      setNewWpRounding("1min");
+      setWpDialogEditId(null);
       setWpDialogOpen(true);
       return;
     }
     const def = workplaces[value];
     if (!def) return;
     setTimecardRows((prev) => prev.map((r) =>
-      r.id === id ? { ...r, workplace: value, breakMinutes: def.breakMinutes } : r
+      r.id === id ? { ...r, workplaceId: value, breakMinutes: def.defaultRestMinutes } : r
     ));
   };
 
-  const handleCreateWorkplace = () => {
-    const name = newWpName.trim();
-    if (!name) return;
-    const newKey = `wp_${Date.now()}`;
-    const colorIdx = Math.max(0, Object.keys(workplaces).length - 3) % NEW_WORKPLACE_COLORS.length;
-    const def: WorkplaceDef = {
-      label: name,
-      breakMinutes: newWpBreak,
-      color: NEW_WORKPLACE_COLORS[colorIdx],
-      workStart: newWpStart,
-      workEnd: newWpEnd,
-      rounding: newWpRounding,
-    };
-    onAddWorkplace(newKey, def);
-    if (wpDialogRowId) {
-      setTimecardRows((prev) => prev.map((r) =>
-        r.id === wpDialogRowId ? { ...r, workplace: newKey, breakMinutes: newWpBreak } : r
-      ));
+  const handleEditWorkplace = (wpId: string) => {
+    if (!workplaces[wpId]) return;
+    setWpDialogMode("edit");
+    setWpDialogEditId(wpId);
+    setWpDialogRowId(null);
+    setWpDialogOpen(true);
+  };
+
+  const handleDialogSubmit = (def: Omit<WorkplaceDef, "color"> & { color?: string }) => {
+    if (wpDialogMode === "edit" && wpDialogEditId) {
+      const existing = workplaces[wpDialogEditId];
+      const updated: WorkplaceDef = {
+        ...def,
+        id: wpDialogEditId,
+        color: def.color ?? existing.color,
+      };
+      onUpdateWorkplace(wpDialogEditId, updated);
+    } else {
+      const newKey = `wp_${Date.now()}`;
+      const colorIdx = Math.max(0, Object.keys(workplaces).length - 2) % NEW_WORKPLACE_COLORS.length;
+      const newDef: WorkplaceDef = {
+        ...def,
+        id: newKey,
+        color: NEW_WORKPLACE_COLORS[colorIdx],
+      };
+      onAddWorkplace(newKey, newDef);
+      if (wpDialogRowId) {
+        setTimecardRows((prev) => prev.map((r) =>
+          r.id === wpDialogRowId ? { ...r, workplaceId: newKey, breakMinutes: newDef.defaultRestMinutes } : r
+        ));
+      }
     }
     setWpDialogOpen(false);
     setWpDialogRowId(null);
+    setWpDialogEditId(null);
   };
 
   const handleBreakMinutesChange = (id: string, mins: number) => {
     setTimecardRows((prev) => prev.map((r) => r.id === id ? { ...r, breakMinutes: mins } : r));
   };
 
-  // エラー行の手修正 → 両方入力でステータス昇格 + timeManuallyEdited フラグ
   const handleEditTime = (id: string, field: "editStart" | "editEnd", value: string) => {
     setTimecardRows((prev) => prev.map((r) => {
       if (r.id !== id) return r;
@@ -765,26 +1195,21 @@ export function PayrollTab({ currentDate, employeeId, workplaces, onAddWorkplace
     }));
   };
 
-  const handleToggleEarlyOvertime = (id: string, checked: boolean) => {
+  const handleToggleEarlyOvertime = (id: string, checked: boolean) =>
     setTimecardRows((prev) => prev.map((r) => r.id === id ? { ...r, earlyOvertime: checked } : r));
-  };
-
-  const handleToggleLateNight = (id: string, checked: boolean) => {
+  const handleToggleLateNight = (id: string, checked: boolean) =>
     setTimecardRows((prev) => prev.map((r) => r.id === id ? { ...r, lateNightPremium: checked } : r));
-  };
-
-  const handleNoteChange = (id: string, note: string) => {
+  const handleNoteChange = (id: string, note: string) =>
     setTimecardRows((prev) => prev.map((r) => r.id === id ? { ...r, note } : r));
-  };
-
-  const handleToggleExpanded = (id: string) => {
+  const handleHolidayOverrideChange = (id: string, value: HolidayType | "auto") =>
+    setTimecardRows((prev) => prev.map((r) => r.id === id ? { ...r, holidayOverride: value } : r));
+  const handleToggleExpanded = (id: string) =>
     setTimecardRows((prev) => prev.map((r) => r.id === id ? { ...r, expanded: !r.expanded } : r));
-  };
 
   const handleAddManualRow = () => {
     const d = currentDate;
     manualRowCounter += 1;
-    const defaultBreak = workplaces[DEFAULT_WP_KEY]?.breakMinutes ?? 60;
+    const defaultBreak = workplaces[DEFAULT_WP_KEY]?.defaultRestMinutes ?? 60;
     setTimecardRows((prev) => [
       ...prev,
       {
@@ -794,44 +1219,63 @@ export function PayrollTab({ currentDate, employeeId, workplaces, onAddWorkplace
         ocrStatus: "manual",
         ocrStart: "", ocrEnd: "", editStart: "", editEnd: "",
         stdStart: "--:--", stdEnd: "--:--",
-        workplace: DEFAULT_WP_KEY, breakMinutes: defaultBreak,
+        workplaceId: DEFAULT_WP_KEY, breakMinutes: defaultBreak,
         earlyOvertime: false, lateNightPremium: false, note: "", expanded: false,
-        timeManuallyEdited: false,
+        timeManuallyEdited: false, holidayOverride: "auto",
       },
     ]);
   };
 
-  // 正味総労働時間(休憩差引後)
-  const totalHours = timecardRows.reduce((sum, row) => {
-    const needsInput = row.ocrStatus === "error" || row.ocrStatus === "manual";
-    const start = needsInput ? row.editStart : (row.earlyOvertime ? row.ocrStart : row.stdStart);
-    const end   = needsInput ? row.editEnd   : row.stdEnd;
-    const gross = calcHours(start, end);
-    return sum + (gross > 0 ? Math.max(0, gross - row.breakMinutes / 60) : 0);
-  }, 0);
+  // 月間 5区分集計 (workplaces / timecardRows 変更で再計算)
+  const monthlyBuckets = useMemo<TimeBuckets>(() => {
+    return timecardRows.reduce<TimeBuckets>((acc, row) => {
+      const wp = workplaces[row.workplaceId];
+      if (!wp) return acc;
+      const needsInput = row.ocrStatus === "error" || row.ocrStatus === "manual";
+      const effectiveStart = needsInput
+        ? (row.editStart || "--:--")
+        : row.earlyOvertime ? row.ocrStart : row.stdStart;
+      const effectiveEnd = needsInput ? (row.editEnd || "--:--") : row.stdEnd;
+      const rowDate = getRowDate(row.year, row.date);
+      const autoHoliday = detectHoliday(rowDate, wp);
+      const holiday = row.holidayOverride === "auto" ? autoHoliday : row.holidayOverride;
+      const buckets = calcRowBuckets(
+        effectiveStart, effectiveEnd, row.ocrStart, row.stdStart,
+        row.breakMinutes, row.earlyOvertime, holiday,
+      );
+      return addBuckets(acc, buckets);
+    }, EMPTY_BUCKETS);
+  }, [timecardRows, workplaces]);
 
-  // 総支給額
+  // 正味労働時間（時給制総支給用）
+  const totalHours = useMemo(() =>
+    monthlyBuckets.basic + monthlyBuckets.overtime + monthlyBuckets.earlyOvertime
+    + monthlyBuckets.legalHolidayWork + monthlyBuckets.scheduledHolidayWork,
+    [monthlyBuckets],
+  );
+
   const monthlyRaw = parseInt(monthlySalaryInput.replace(/[^0-9]/g, ""), 10) || 0;
   const hourlyRaw  = parseInt(hourlyRateInput.replace(/[^0-9]/g, ""), 10) || 0;
   const grossAmount = payType === "monthly" ? monthlyRaw : Math.round(hourlyRaw * totalHours);
 
-  const tableHandlers: Omit<TimecardTableProps, "rows" | "currentDate" | "totalHours"> = {
+  const tableHandlers: Omit<TimecardTableProps, "rows" | "currentDate" | "totalHours" | "monthlyBuckets"> = {
     workplaces,
     onWorkplaceChange: handleWorkplaceChange,
+    onEditWorkplace: handleEditWorkplace,
     onBreakMinutesChange: handleBreakMinutesChange,
     onEditTime: handleEditTime,
     onToggleEarlyOvertime: handleToggleEarlyOvertime,
     onToggleLateNight: handleToggleLateNight,
     onNoteChange: handleNoteChange,
+    onHolidayOverrideChange: handleHolidayOverrideChange,
     onToggleExpanded: handleToggleExpanded,
     onAddManualRow: handleAddManualRow,
   };
 
-  const canSubmitWp = newWpName.trim().length > 0 && newWpStart && newWpEnd;
+  const dialogInitial = wpDialogMode === "edit" && wpDialogEditId ? workplaces[wpDialogEditId] ?? null : null;
 
   return (
-    <div className="space-y-6 max-w-xl">
-      {/* ヘッダー */}
+    <div className="space-y-6 max-w-3xl">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
@@ -845,7 +1289,6 @@ export function PayrollTab({ currentDate, employeeId, workplaces, onAddWorkplace
         <PayTypePills value={payType} onChange={setPayType} />
       </div>
 
-      {/* 入力カード */}
       <div className="bg-card border border-border rounded-2xl p-5 shadow-sm space-y-5">
         {payType === "monthly" ? (
           <MonthlyInput value={monthlySalaryInput} onChange={setMonthlySalaryInput} />
@@ -854,133 +1297,32 @@ export function PayrollTab({ currentDate, employeeId, workplaces, onAddWorkplace
             hourlyRate={hourlyRateInput} onHourlyRateChange={setHourlyRateInput}
             rows={timecardRows} currentDate={currentDate}
             ocrState={ocrState} onFileSelect={handleFileSelect}
-            totalHours={totalHours} {...tableHandlers}
+            totalHours={totalHours} monthlyBuckets={monthlyBuckets} {...tableHandlers}
           />
         )}
       </div>
 
-      {/* 結果カード */}
       <ResultCard grossAmount={grossAmount} payType={payType} currentDate={currentDate} />
 
-      {/* 注記 */}
       <div className="flex items-start gap-2 text-xs text-muted-foreground">
         <Info className="w-4 h-4 flex-shrink-0 mt-0.5 text-primary/40" />
         <p>
           本計算は国税庁「給与所得の源泉徴収税額表(月額表)」電算機計算の特例に基づく甲欄・扶養親族0人の簡易計算です。
           時給制の総支給額は休憩時間を差し引いた正味労働時間と基本時給から算出しています。
-          社会保険料・住民税・各種控除は含まれておらず、実際の控除額と異なる場合があります。
+          5区分の判定はマスタの所定労働時間・法定/所定休日設定に基づくダミーロジックです。
         </p>
       </div>
 
-      {/* ─── 職場登録 Dialog ─── */}
-      <Dialog
+      <WorkplaceDialog
         open={wpDialogOpen}
         onOpenChange={(open) => {
           setWpDialogOpen(open);
-          if (!open) setWpDialogRowId(null);
+          if (!open) { setWpDialogRowId(null); setWpDialogEditId(null); }
         }}
-      >
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <MapPin className="w-4 h-4 text-primary" />新しい職場を登録
-            </DialogTitle>
-            <DialogDescription>
-              職場ごとの所定労働時間と既定の休憩時間を登録します。後で他の行からも選択できます。
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="space-y-4 py-2">
-            {/* 職場名 */}
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium text-foreground" htmlFor="wp-name">
-                職場名 <span className="text-destructive">*</span>
-              </label>
-              <input
-                id="wp-name"
-                type="text"
-                value={newWpName}
-                onChange={(e) => setNewWpName(e.target.value)}
-                placeholder="例：渋谷店、本社オフィス"
-                autoFocus
-                className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all placeholder:text-muted-foreground/40"
-              />
-            </div>
-
-            {/* 所定労働時間 */}
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium text-foreground">所定労働時間</label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="time"
-                  value={newWpStart}
-                  onChange={(e) => setNewWpStart(e.target.value)}
-                  aria-label="始業時刻"
-                  className="flex-1 px-3 py-2.5 rounded-xl border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all"
-                />
-                <span className="text-muted-foreground text-sm">–</span>
-                <input
-                  type="time"
-                  value={newWpEnd}
-                  onChange={(e) => setNewWpEnd(e.target.value)}
-                  aria-label="終業時刻"
-                  className="flex-1 px-3 py-2.5 rounded-xl border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all"
-                />
-              </div>
-            </div>
-
-            {/* デフォルト休憩時間 */}
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium text-foreground" htmlFor="wp-break">
-                デフォルト休憩時間(分)
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  id="wp-break"
-                  type="number"
-                  min={0}
-                  max={240}
-                  step={15}
-                  value={newWpBreak}
-                  onChange={(e) => setNewWpBreak(parseInt(e.target.value, 10) || 0)}
-                  className="w-28 px-3 py-2.5 rounded-xl border border-border bg-background text-foreground text-sm font-medium tabular-nums focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all"
-                />
-                <span className="text-sm text-muted-foreground">分</span>
-              </div>
-            </div>
-
-            {/* 打刻丸め */}
-            <div className="space-y-1.5">
-              <label className="text-sm font-medium text-foreground">打刻の丸め設定</label>
-              <Select value={newWpRounding} onValueChange={(v) => setNewWpRounding(v as RoundingType)}>
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {(Object.keys(ROUNDING_LABELS) as RoundingType[]).map((k) => (
-                    <SelectItem key={k} value={k}>{ROUNDING_LABELS[k]}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          <DialogFooter className="gap-2 mt-2">
-            <DialogClose asChild>
-              <button className="px-4 py-2 rounded-xl border border-border text-sm font-medium text-foreground hover:bg-secondary transition-colors">
-                キャンセル
-              </button>
-            </DialogClose>
-            <button
-              onClick={handleCreateWorkplace}
-              disabled={!canSubmitWp}
-              className="px-5 py-2 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              決定(登録)
-            </button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        mode={wpDialogMode}
+        initial={dialogInitial}
+        onSubmit={handleDialogSubmit}
+      />
     </div>
   );
 }
