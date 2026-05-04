@@ -176,8 +176,8 @@ export default function Dashboard() {
   // Mobile sheet state
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
 
-  // 職場マスタ(全従業員で共有)
-  const [workplaces, setWorkplaces] = useState<Record<string, WorkplaceDef>>(DEFAULT_WORKPLACES);
+  // 職場マスタ(全従業員で共有 — localStorage 同期)
+  const [workplaces, setWorkplaces] = usePersistedState<Record<string, WorkplaceDef>>("mock_workplaces", DEFAULT_WORKPLACES);
   const handleAddWorkplace = (key: string, def: WorkplaceDef) => {
     setWorkplaces((prev) => ({ ...prev, [key]: { ...def, tenantId: DEFAULT_TENANT_ID } }));
   };
