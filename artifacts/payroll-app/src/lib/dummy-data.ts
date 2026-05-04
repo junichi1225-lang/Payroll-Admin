@@ -5,6 +5,43 @@ export type TimecardOcrStatus = "success" | "error" | "manual";
 export type RoundingType = "1min" | "15min" | "snap";
 export type DayOfWeek = "Sunday" | "Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday" | "Saturday";
 export type HolidayType = "weekday" | "legal_holiday" | "scheduled_holiday";
+export type EmploymentType = "正社員" | "契約社員" | "アルバイト・パート";
+export type SalaryType = "月給" | "日給" | "時給";
+export type TaxCategory = "甲欄" | "乙欄";
+
+// ─────────────────────────────────────────────
+// 従業員マスタ DB（個人情報・労務・税金/社会保険）
+// ─────────────────────────────────────────────
+export interface EmployeeMaster {
+  id: string;
+  lastName: string;
+  firstName: string;
+  lastNameKana: string;
+  firstNameKana: string;
+  birthDate: string;
+  postalCode: string;
+  address: string;
+  phoneNumber: string;
+  pensionNumber: string;
+  employmentInsuranceNumber: string;
+  employmentType: EmploymentType;
+  taxCategory: TaxCategory;
+  dependentsCount: number;
+  isSocialInsurance: boolean;
+  standardRemuneration: number;
+  isEmploymentInsurance: boolean;
+}
+
+// ─────────────────────────────────────────────
+// 契約・単価マスタ DB（職場別の給与契約）
+// ─────────────────────────────────────────────
+export interface ContractMaster {
+  id: string;
+  employeeId: string;
+  workplaceId: string;   // 既定契約は 'default'
+  salaryType: SalaryType;
+  baseSalary: number;
+}
 
 // ─────────────────────────────────────────────
 // 職場マスタ DB

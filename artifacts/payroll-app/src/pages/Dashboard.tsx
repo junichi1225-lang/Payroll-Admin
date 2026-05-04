@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { MonthSwitcher } from "@/components/MonthSwitcher";
-import { DUMMY_EMPLOYEE_DATA, EmployeeRecord, EmployeeColor, DEFAULT_WORKPLACES, WorkplaceDef } from "@/lib/dummy-data";
+import { DUMMY_EMPLOYEE_DATA, EmployeeRecord, EmployeeColor, DEFAULT_WORKPLACES, WorkplaceDef, EmployeeMaster, ContractMaster } from "@/lib/dummy-data";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import { Plus, Users } from "lucide-react";
@@ -184,6 +184,33 @@ export default function Dashboard() {
     setWorkplaces((prev) => ({ ...prev, [id]: { ...def, id } }));
   };
 
+  // 従業員マスタ DB / 契約マスタ DB
+  const [employeeDB, setEmployeeDB] = useState<Record<string, EmployeeMaster>>({});
+  const [contractDB, setContractDB] = useState<ContractMaster[]>([]);
+  const handleSaveEmployeeMaster = (
+    master: EmployeeMaster,
+    contractInput: Pick<ContractMaster, "salaryType" | "baseSalary">,
+  ) => {
+    setEmployeeDB((prev) => ({ ...prev, [master.id]: master }));
+    setContractDB((prev) => {
+      const idx = prev.findIndex((c) => c.employeeId === master.id && c.workplaceId === "default");
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = { ...next[idx], ...contractInput };
+        return next;
+      }
+      return [
+        ...prev,
+        {
+          id: `c_${master.id}_default`,
+          employeeId: master.id,
+          workplaceId: "default",
+          ...contractInput,
+        },
+      ];
+    });
+  };
+
   // Add employee dialog state
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [newName, setNewName] = useState("");
@@ -360,7 +387,13 @@ export default function Dashboard() {
                           onUpdateWorkplace={handleUpdateWorkplace}
                         />
                       ) : (
-                        <EmployeeInfoTab key={selectedEmployeeId} employee={selectedEmployee} />
+                        <EmployeeInfoTab
+                          key={selectedEmployeeId}
+                          employee={selectedEmployee}
+                          savedMaster={employeeDB[selectedEmployeeId]}
+                          savedContract={contractDB.find((c) => c.employeeId === selectedEmployeeId && c.workplaceId === "default")}
+                          onSave={handleSaveEmployeeMaster}
+                        />
                       )}
                     </motion.div>
                   </AnimatePresence>
