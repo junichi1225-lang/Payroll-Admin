@@ -2,6 +2,7 @@ import { useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { MonthSwitcher } from "@/components/MonthSwitcher";
 import { DUMMY_EMPLOYEE_DATA, EmployeeRecord, EmployeeColor, DEFAULT_WORKPLACES, WorkplaceDef, EmployeeMaster, ContractMaster, DEFAULT_TENANT_ID } from "@/lib/dummy-data";
+import { usePersistedState } from "@/lib/usePersistedState";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import { Plus, Users } from "lucide-react";
@@ -184,9 +185,9 @@ export default function Dashboard() {
     setWorkplaces((prev) => ({ ...prev, [id]: { ...def, id, tenantId: DEFAULT_TENANT_ID } }));
   };
 
-  // 従業員マスタ DB / 契約マスタ DB
-  const [employeeDB, setEmployeeDB] = useState<Record<string, EmployeeMaster>>({});
-  const [contractDB, setContractDB] = useState<ContractMaster[]>([]);
+  // 従業員マスタ DB / 契約マスタ DB（localStorage 同期 — モックアップデモ用）
+  const [employeeDB, setEmployeeDB] = usePersistedState<Record<string, EmployeeMaster>>("mock_employeeDB", {});
+  const [contractDB, setContractDB] = usePersistedState<ContractMaster[]>("mock_contractDB", []);
   const handleSaveEmployeeMaster = (
     master: EmployeeMaster,
     contractInput: Pick<ContractMaster, "salaryType" | "baseSalary">,

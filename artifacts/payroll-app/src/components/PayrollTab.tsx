@@ -11,6 +11,7 @@ import {
   NEW_WORKPLACE_COLORS,
   DEFAULT_TENANT_ID,
 } from "@/lib/dummy-data";
+import { useKeyedPersistedState } from "@/lib/usePersistedState";
 import { Switch } from "@/components/ui/switch";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectSeparator,
@@ -1090,8 +1091,20 @@ export function PayrollTab({ currentDate, employeeId, workplaces, onAddWorkplace
   const [payType, setPayType] = useState<PayType>("monthly");
   const [monthlySalaryInput, setMonthlySalaryInput] = useState("");
   const [hourlyRateInput, setHourlyRateInput] = useState("");
-  const [timecardRows, setTimecardRows] = useState<TimecardRow[]>([]);
   const [ocrState, setOcrState] = useState<OcrState>("idle");
+
+  // タイムカード State（localStorage 同期 — モックアップデモ用）
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth() + 1;
+  const storageKey = `timecard_${DEFAULT_TENANT_ID}_${employeeId}_${year}_${month}`;
+  const [timecardRows, setTimecardRows] = useKeyedPersistedState<TimecardRow[]>(
+    storageKey,
+    () => {
+      const entries = getTimecardEntries(employeeId, year, month);
+      const defaultBreak = workplaces[DEFAULT_WP_KEY]?.defaultRestMinutes ?? 60;
+      return entries.map((e) => entryToRow(e, defaultBreak));
+    },
+  );
 
   // Dialog state
   const [wpDialogOpen, setWpDialogOpen] = useState(false);
@@ -1099,16 +1112,10 @@ export function PayrollTab({ currentDate, employeeId, workplaces, onAddWorkplace
   const [wpDialogRowId, setWpDialogRowId] = useState<string | null>(null);
   const [wpDialogEditId, setWpDialogEditId] = useState<string | null>(null);
 
-  // 月 / 従業員変更
+  // 月 / 従業員変更時に OCR バナー状態をリセット
   useEffect(() => {
-    const year = currentDate.getFullYear();
-    const month = currentDate.getMonth() + 1;
-    const entries = getTimecardEntries(employeeId, year, month);
-    const defaultBreak = workplaces[DEFAULT_WP_KEY]?.defaultRestMinutes ?? 60;
-    setTimecardRows(entries.map((e) => entryToRow(e, defaultBreak)));
     setOcrState("idle");
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentDate, employeeId]);
+  }, [storageKey]);
 
   const handleFileSelect = (_file: File) => {
     setOcrState("loading");
