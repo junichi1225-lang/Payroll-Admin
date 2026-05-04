@@ -1,3 +1,6 @@
+// マルチテナント識別子（DB移行時は認証コンテキストから取得）
+export const DEFAULT_TENANT_ID = "tenant-1";
+
 export type PayrollStatus = "確定済み" | "未確定";
 export type EmployeeStatus = "在籍中" | "休職中" | "退職";
 export type EmployeeColor = "blue" | "green" | "rose" | "amber" | "purple" | "teal";
@@ -13,6 +16,7 @@ export type TaxCategory = "甲欄" | "乙欄";
 // 従業員マスタ DB（個人情報・労務・税金/社会保険）
 // ─────────────────────────────────────────────
 export interface EmployeeMaster {
+  tenantId: string;
   id: string;
   lastName: string;
   firstName: string;
@@ -36,6 +40,7 @@ export interface EmployeeMaster {
 // 契約・単価マスタ DB（職場別の給与契約）
 // ─────────────────────────────────────────────
 export interface ContractMaster {
+  tenantId: string;
   id: string;
   employeeId: string;
   workplaceId: string;   // 既定契約は 'default'
@@ -48,6 +53,7 @@ export interface ContractMaster {
 // ─────────────────────────────────────────────
 
 export interface WorkplaceDef {
+  tenantId: string;                 // マルチテナント識別子
   id: string;                       // 'w1', 'w2', 'wp_xxx'
   name: string;                     // 職場名
   color: string;                    // Tailwind classes
@@ -61,6 +67,7 @@ export interface WorkplaceDef {
 
 export const DEFAULT_WORKPLACES: Record<string, WorkplaceDef> = {
   w1: {
+    tenantId: DEFAULT_TENANT_ID,
     id: "w1", name: "職場A",
     color: "text-blue-600 bg-blue-50 border-blue-200",
     defaultStartTime: "09:00", defaultEndTime: "18:00",
@@ -68,6 +75,7 @@ export const DEFAULT_WORKPLACES: Record<string, WorkplaceDef> = {
     legalHoliday: "Sunday", scheduledHoliday: ["Saturday"],
   },
   w2: {
+    tenantId: DEFAULT_TENANT_ID,
     id: "w2", name: "職場B",
     color: "text-violet-600 bg-violet-50 border-violet-200",
     defaultStartTime: "10:00", defaultEndTime: "19:00",
@@ -121,6 +129,7 @@ export interface PayrollRecord {
 // ─────────────────────────────────────────────
 
 export interface TimecardEntry {
+  tenantId: string;          // マルチテナント識別子
   id: string;
   date: string;              // 表示用ラベル "3/2（月）" など
   year: number;
@@ -130,6 +139,8 @@ export interface TimecardEntry {
   ocrEnd: string;            // OCR読取終了（同上）
   stdStart: string;          // 計上開始（丸め後）"09:00"（errorのとき"--:--"）
   stdEnd: string;            // 計上終了（同上）
+  /** 休憩時間が手動編集されたか（マスタ既定値との差分判定の代替） */
+  isRestManuallyEdited: boolean;
 }
 
 // ─────────────────────────────────────────────
@@ -141,11 +152,20 @@ function entry(
   ocrStart: string, ocrEnd: string, stdStart: string, stdEnd: string,
   ocrStatus: TimecardOcrStatus = "success"
 ): TimecardEntry {
-  return { id, date, year, month, ocrStatus, ocrStart, ocrEnd, stdStart, stdEnd };
+  return {
+    tenantId: DEFAULT_TENANT_ID,
+    id, date, year, month, ocrStatus, ocrStart, ocrEnd, stdStart, stdEnd,
+    isRestManuallyEdited: false,
+  };
 }
 
 function errorEntry(id: string, date: string, year: number, month: number): TimecardEntry {
-  return { id, date, year, month, ocrStatus: "error", ocrStart: "", ocrEnd: "", stdStart: "--:--", stdEnd: "--:--" };
+  return {
+    tenantId: DEFAULT_TENANT_ID,
+    id, date, year, month, ocrStatus: "error",
+    ocrStart: "", ocrEnd: "", stdStart: "--:--", stdEnd: "--:--",
+    isRestManuallyEdited: false,
+  };
 }
 
 // ─────────────────────────────────────────────

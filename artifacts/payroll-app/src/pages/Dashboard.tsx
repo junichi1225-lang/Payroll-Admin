@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { MonthSwitcher } from "@/components/MonthSwitcher";
-import { DUMMY_EMPLOYEE_DATA, EmployeeRecord, EmployeeColor, DEFAULT_WORKPLACES, WorkplaceDef, EmployeeMaster, ContractMaster } from "@/lib/dummy-data";
+import { DUMMY_EMPLOYEE_DATA, EmployeeRecord, EmployeeColor, DEFAULT_WORKPLACES, WorkplaceDef, EmployeeMaster, ContractMaster, DEFAULT_TENANT_ID } from "@/lib/dummy-data";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import { Plus, Users } from "lucide-react";
@@ -178,10 +178,10 @@ export default function Dashboard() {
   // 職場マスタ(全従業員で共有)
   const [workplaces, setWorkplaces] = useState<Record<string, WorkplaceDef>>(DEFAULT_WORKPLACES);
   const handleAddWorkplace = (key: string, def: WorkplaceDef) => {
-    setWorkplaces((prev) => ({ ...prev, [key]: def }));
+    setWorkplaces((prev) => ({ ...prev, [key]: { ...def, tenantId: DEFAULT_TENANT_ID } }));
   };
   const handleUpdateWorkplace = (id: string, def: WorkplaceDef) => {
-    setWorkplaces((prev) => ({ ...prev, [id]: { ...def, id } }));
+    setWorkplaces((prev) => ({ ...prev, [id]: { ...def, id, tenantId: DEFAULT_TENANT_ID } }));
   };
 
   // 従業員マスタ DB / 契約マスタ DB
@@ -196,12 +196,13 @@ export default function Dashboard() {
       const idx = prev.findIndex((c) => c.employeeId === master.id && c.workplaceId === "default");
       if (idx >= 0) {
         const next = [...prev];
-        next[idx] = { ...next[idx], ...contractInput };
+        next[idx] = { ...next[idx], ...contractInput, tenantId: DEFAULT_TENANT_ID };
         return next;
       }
       return [
         ...prev,
         {
+          tenantId: DEFAULT_TENANT_ID,
           id: `c_${master.id}_default`,
           employeeId: master.id,
           workplaceId: "default",

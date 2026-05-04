@@ -9,6 +9,7 @@ import {
   DayOfWeek,
   HolidayType,
   NEW_WORKPLACE_COLORS,
+  DEFAULT_TENANT_ID,
 } from "@/lib/dummy-data";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -415,7 +416,7 @@ function TimecardTable({
                 const effectiveEnd = needsInput ? (row.editEnd || "--:--") : row.stdEnd;
 
                 const wp = workplaces[row.workplaceId] ?? fallbackWp;
-                const breakManuallyEdited = row.breakMinutes !== wp.defaultRestMinutes;
+                const breakManuallyEdited = row.isRestManuallyEdited;
 
                 // 休日属性: override > auto detect
                 const rowDate = getRowDate(row.year, row.date);
@@ -942,6 +943,7 @@ function WorkplaceDialog({ open, onOpenChange, mode, initial, onSubmit }: Workpl
   const handleSubmit = () => {
     if (!canSubmit) return;
     onSubmit({
+      tenantId: initial?.tenantId ?? DEFAULT_TENANT_ID,
       id: initial?.id ?? "",
       name: name.trim(),
       defaultStartTime: start,
@@ -1131,7 +1133,9 @@ export function PayrollTab({ currentDate, employeeId, workplaces, onAddWorkplace
     const def = workplaces[value];
     if (!def) return;
     setTimecardRows((prev) => prev.map((r) =>
-      r.id === id ? { ...r, workplaceId: value, breakMinutes: def.defaultRestMinutes } : r
+      r.id === id
+        ? { ...r, workplaceId: value, breakMinutes: def.defaultRestMinutes, isRestManuallyEdited: false }
+        : r
     ));
   };
 
@@ -1163,7 +1167,9 @@ export function PayrollTab({ currentDate, employeeId, workplaces, onAddWorkplace
       onAddWorkplace(newKey, newDef);
       if (wpDialogRowId) {
         setTimecardRows((prev) => prev.map((r) =>
-          r.id === wpDialogRowId ? { ...r, workplaceId: newKey, breakMinutes: newDef.defaultRestMinutes } : r
+          r.id === wpDialogRowId
+            ? { ...r, workplaceId: newKey, breakMinutes: newDef.defaultRestMinutes, isRestManuallyEdited: false }
+            : r
         ));
       }
     }
@@ -1173,7 +1179,9 @@ export function PayrollTab({ currentDate, employeeId, workplaces, onAddWorkplace
   };
 
   const handleBreakMinutesChange = (id: string, mins: number) => {
-    setTimecardRows((prev) => prev.map((r) => r.id === id ? { ...r, breakMinutes: mins } : r));
+    setTimecardRows((prev) => prev.map((r) =>
+      r.id === id ? { ...r, breakMinutes: mins, isRestManuallyEdited: true } : r
+    ));
   };
 
   const handleEditTime = (id: string, field: "editStart" | "editEnd", value: string) => {
@@ -1213,6 +1221,7 @@ export function PayrollTab({ currentDate, employeeId, workplaces, onAddWorkplace
     setTimecardRows((prev) => [
       ...prev,
       {
+        tenantId: DEFAULT_TENANT_ID,
         id: `m${manualRowCounter}`,
         date: `${d.getMonth() + 1}/${d.getDate()}`,
         year: d.getFullYear(), month: d.getMonth() + 1,
@@ -1222,6 +1231,7 @@ export function PayrollTab({ currentDate, employeeId, workplaces, onAddWorkplace
         workplaceId: DEFAULT_WP_KEY, breakMinutes: defaultBreak,
         earlyOvertime: false, lateNightPremium: false, note: "", expanded: false,
         timeManuallyEdited: false, holidayOverride: "auto",
+        isRestManuallyEdited: false,
       },
     ]);
   };

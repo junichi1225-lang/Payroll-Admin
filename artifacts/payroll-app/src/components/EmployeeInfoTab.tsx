@@ -1,6 +1,6 @@
 import { useState, useRef, useMemo, useEffect } from "react";
 import {
-  EmployeeRecord, EmployeeMaster, ContractMaster,
+  EmployeeRecord, EmployeeMaster, ContractMaster, DEFAULT_TENANT_ID,
   EmploymentType, SalaryType, TaxCategory,
 } from "@/lib/dummy-data";
 import { ChevronDown, ChevronUp, MapPin, Loader2, Check, IdCard, Briefcase, ShieldCheck, Save, RotateCcw } from "lucide-react";
@@ -287,6 +287,7 @@ export function EmployeeInfoTab({ employee, savedMaster, savedContract, onSave }
   // ── 保存（DB分離: employeeMaster + contractMaster へ ） ──
   const handleSave = () => {
     const master: EmployeeMaster = {
+      tenantId: DEFAULT_TENANT_ID,
       id: employee.id,
       lastName, firstName,
       lastNameKana: lastNameKana.kana,
