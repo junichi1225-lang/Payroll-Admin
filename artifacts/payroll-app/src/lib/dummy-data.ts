@@ -2,6 +2,34 @@ export type PayrollStatus = "確定済み" | "未確定";
 export type EmployeeStatus = "在籍中" | "休職中" | "退職";
 export type EmployeeColor = "blue" | "green" | "rose" | "amber" | "purple" | "teal";
 export type TimecardOcrStatus = "success" | "error" | "manual";
+export type RoundingType = "1min" | "15min" | "snap";
+
+// ─────────────────────────────────────────────
+// 職場マスタ
+// ─────────────────────────────────────────────
+
+export interface WorkplaceDef {
+  label: string;
+  breakMinutes: number;
+  color: string;          // Tailwind classes
+  workStart: string;      // 始業 "09:00"
+  workEnd: string;        // 終業 "18:00"
+  rounding: RoundingType;
+}
+
+export const DEFAULT_WORKPLACES: Record<string, WorkplaceDef> = {
+  A: { label: "職場A", breakMinutes: 60, color: "text-blue-600 bg-blue-50 border-blue-200", workStart: "09:00", workEnd: "18:00", rounding: "1min" },
+  B: { label: "職場B", breakMinutes: 45, color: "text-violet-600 bg-violet-50 border-violet-200", workStart: "09:00", workEnd: "17:30", rounding: "15min" },
+  C: { label: "職場C", breakMinutes: 30, color: "text-teal-600 bg-teal-50 border-teal-200", workStart: "10:00", workEnd: "19:00", rounding: "snap" },
+};
+
+export const NEW_WORKPLACE_COLORS = [
+  "text-pink-600 bg-pink-50 border-pink-200",
+  "text-emerald-600 bg-emerald-50 border-emerald-200",
+  "text-orange-600 bg-orange-50 border-orange-200",
+  "text-cyan-600 bg-cyan-50 border-cyan-200",
+  "text-fuchsia-600 bg-fuchsia-50 border-fuchsia-200",
+];
 
 // ─────────────────────────────────────────────
 // 従業員マスタ（月が変わっても変化しない情報）

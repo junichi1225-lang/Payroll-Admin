@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { MonthSwitcher } from "@/components/MonthSwitcher";
-import { DUMMY_EMPLOYEE_DATA, EmployeeRecord, EmployeeColor } from "@/lib/dummy-data";
+import { DUMMY_EMPLOYEE_DATA, EmployeeRecord, EmployeeColor, DEFAULT_WORKPLACES, WorkplaceDef } from "@/lib/dummy-data";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import { Plus, Users } from "lucide-react";
@@ -175,6 +175,12 @@ export default function Dashboard() {
   // Mobile sheet state
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
 
+  // 職場マスタ(全従業員で共有)
+  const [workplaces, setWorkplaces] = useState<Record<string, WorkplaceDef>>(DEFAULT_WORKPLACES);
+  const handleAddWorkplace = (key: string, def: WorkplaceDef) => {
+    setWorkplaces((prev) => ({ ...prev, [key]: def }));
+  };
+
   // Add employee dialog state
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [newName, setNewName] = useState("");
@@ -346,6 +352,8 @@ export default function Dashboard() {
                           key={selectedEmployeeId}
                           currentDate={currentDate}
                           employeeId={selectedEmployeeId}
+                          workplaces={workplaces}
+                          onAddWorkplace={handleAddWorkplace}
                         />
                       ) : (
                         <EmployeeInfoTab key={selectedEmployeeId} employee={selectedEmployee} />
