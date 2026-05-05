@@ -1,13 +1,14 @@
 import { useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { MonthSwitcher } from "@/components/MonthSwitcher";
-import { DUMMY_EMPLOYEE_DATA, EmployeeRecord, EmployeeColor, DEFAULT_WORKPLACES, WorkplaceDef, EmployeeMaster, ContractMaster, DEFAULT_TENANT_ID } from "@/lib/dummy-data";
+import { DUMMY_EMPLOYEE_DATA, EmployeeRecord, EmployeeColor, DEFAULT_WORKPLACES, WorkplaceDef, EmployeeMaster, ContractMaster, PayrollResult, DEFAULT_TENANT_ID } from "@/lib/dummy-data";
 import { usePersistedState } from "@/lib/usePersistedState";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import { Plus, Users } from "lucide-react";
 import { EmployeeInfoTab } from "@/components/EmployeeInfoTab";
 import { PayrollTab } from "@/components/PayrollTab";
+import { PayrollFinalizationTab } from "@/components/PayrollFinalizationTab";
 import {
   Dialog,
   DialogContent,
@@ -165,7 +166,13 @@ function EmployeeSidebarContent({
 // メインページ
 // ─────────────────────────────────────────────
 
-type TabType = "payroll" | "info";
+type TabType = "payroll" | "info" | "finalize";
+
+const TAB_LABELS: Record<TabType, string> = {
+  payroll: "給与情報",
+  info: "社員情報",
+  finalize: "給与確定",
+};
 
 export default function Dashboard() {
   const [currentDate, setCurrentDate] = useState(new Date(2026, 2, 1));
@@ -188,6 +195,30 @@ export default function Dashboard() {
   // 従業員マスタ DB / 契約マスタ DB（localStorage 同期 — モックアップデモ用）
   const [employeeDB, setEmployeeDB] = usePersistedState<Record<string, EmployeeMaster>>("mock_employeeDB", {});
   const [contractDB, setContractDB] = usePersistedState<ContractMaster[]>("mock_contractDB", []);
+
+  // 給与確定スナップショット DB（マスタ変更後も金額が変動しないように保持）
+  const [payrollResultDB, setPayrollResultDB] = usePersistedState<PayrollResult[]>("mock_payrollResultDB", []);
+  const handleLockOne = (result: PayrollResult) => {
+    setPayrollResultDB((prev) => {
+      const idx = prev.findIndex((p) => p.id === result.id);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = result;
+        return next;
+      }
+      return [...prev, result];
+    });
+  };
+  const handleUnlockOne = (id: string) => {
+    setPayrollResultDB((prev) => prev.filter((p) => p.id !== id));
+  };
+  const handleLockAll = (results: PayrollResult[]) => {
+    setPayrollResultDB((prev) => {
+      const map = new Map(prev.map((p) => [p.id, p]));
+      for (const r of results) map.set(r.id, r);
+      return Array.from(map.values());
+    });
+  };
   const handleSaveEmployeeMaster = (
     master: EmployeeMaster,
     contractInput: Pick<ContractMaster, "salaryType" | "baseSalary">,
@@ -347,12 +378,13 @@ export default function Dashboard() {
 
                   {/* タブ */}
                   <div className="inline-flex bg-secondary/80 p-1 rounded-2xl border border-border/50 shadow-inner mb-6">
-                    {(["payroll", "info"] as const).map((tab) => (
+                    {(["payroll", "info", "finalize"] as const).map((tab) => (
                       <button
                         key={tab}
                         onClick={() => setActiveTab(tab)}
+                        data-testid={`tab-${tab}`}
                         className={cn(
-                          "relative px-6 py-2.5 text-sm font-semibold rounded-xl transition-colors z-10",
+                          "relative px-5 py-2.5 text-sm font-semibold rounded-xl transition-colors z-10",
                           activeTab === tab ? "text-primary-foreground" : "text-muted-foreground hover:text-foreground"
                         )}
                       >
@@ -363,9 +395,7 @@ export default function Dashboard() {
                             transition={{ type: "spring", bounce: 0.2, duration: 0.45 }}
                           />
                         )}
-                        <span className="relative z-20">
-                          {tab === "payroll" ? "給与情報" : "社員情報"}
-                        </span>
+                        <span className="relative z-20">{TAB_LABELS[tab]}</span>
                       </button>
                     ))}
                   </div>
@@ -388,13 +418,24 @@ export default function Dashboard() {
                           onAddWorkplace={handleAddWorkplace}
                           onUpdateWorkplace={handleUpdateWorkplace}
                         />
-                      ) : (
+                      ) : activeTab === "info" ? (
                         <EmployeeInfoTab
                           key={selectedEmployeeId}
                           employee={selectedEmployee}
                           savedMaster={employeeDB[selectedEmployeeId]}
                           savedContract={contractDB.find((c) => c.employeeId === selectedEmployeeId && c.workplaceId === "default")}
                           onSave={handleSaveEmployeeMaster}
+                        />
+                      ) : (
+                        <PayrollFinalizationTab
+                          currentDate={currentDate}
+                          employees={employees}
+                          employeeDB={employeeDB}
+                          contractDB={contractDB}
+                          payrollResultDB={payrollResultDB}
+                          onLockOne={handleLockOne}
+                          onUnlockOne={handleUnlockOne}
+                          onLockAll={handleLockAll}
                         />
                       )}
                     </motion.div>

@@ -53,6 +53,28 @@ export interface ContractMaster {
 }
 
 // ─────────────────────────────────────────────
+// 給与確定スナップショット DB
+// 「ロック」された月の給与額を不変保存。マスタ(時給等)変更後も
+// 過去金額が書き換わらないようにするための SoR(System of Record)。
+// ─────────────────────────────────────────────
+export type PayrollResultStatus = "draft" | "locked";
+
+export interface PayrollResult {
+  tenantId: string;
+  id: string;                    // `pr_${employeeId}_${YYYY-MM}`
+  employeeId: string;
+  targetYearMonth: string;       // "YYYY-MM" 例: "2026-03"
+  status: PayrollResultStatus;
+  appliedSalaryType: SalaryType; // 確定時の給与形態（時給/月給/日給）
+  appliedBaseSalary: number;     // 確定時の単価（時給制なら時給、月給制なら月額）
+  totalWorkingHours: number;     // 当月の総労働時間（実働）
+  totalPayment: number;          // 総支給額
+  totalDeduction: number;        // 総控除額（所得税＋社保など簡易合算）
+  netPay: number;                // 差引支給額（手取り）
+  lockedAt: string | null;       // ISO8601。draft の場合は null
+}
+
+// ─────────────────────────────────────────────
 // 職場マスタ DB
 // ─────────────────────────────────────────────
 
