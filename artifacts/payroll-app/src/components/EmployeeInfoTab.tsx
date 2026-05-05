@@ -180,6 +180,8 @@ export function EmployeeInfoTab({ employee, savedMaster, savedContract, onSave }
         isSocialInsurance: savedMaster.isSocialInsurance,
         standardRemuneration: savedMaster.standardRemuneration > 0 ? String(savedMaster.standardRemuneration) : "",
         isEmploymentInsurance: savedMaster.isEmploymentInsurance,
+        joinedDate: savedMaster.joinedDate,
+        resignedDate: savedMaster.resignedDate ?? "",
         salaryType: savedContract?.salaryType ?? ("月給" as SalaryType),
         baseSalary: savedContract && savedContract.baseSalary > 0 ? String(savedContract.baseSalary) : "",
       };
@@ -196,6 +198,8 @@ export function EmployeeInfoTab({ employee, savedMaster, savedContract, onSave }
       isSocialInsurance: false,
       standardRemuneration: "",
       isEmploymentInsurance: false,
+      joinedDate: "",
+      resignedDate: "",
       salaryType: "月給" as SalaryType,
       baseSalary: "",
     };
@@ -222,6 +226,8 @@ export function EmployeeInfoTab({ employee, savedMaster, savedContract, onSave }
   const [isSocialInsurance, setIsSocialInsurance] = useState(initialValues.isSocialInsurance);
   const [standardRemuneration, setStandardRemuneration] = useState(initialValues.standardRemuneration);
   const [isEmploymentInsurance, setIsEmploymentInsurance] = useState(initialValues.isEmploymentInsurance);
+  const [joinedDate, setJoinedDate] = useState(initialValues.joinedDate);
+  const [resignedDate, setResignedDate] = useState(initialValues.resignedDate);
 
   const [detailOpen, setDetailOpen] = useState(false);
   const [savedToast, setSavedToast] = useState(false);
@@ -282,6 +288,8 @@ export function EmployeeInfoTab({ employee, savedMaster, savedContract, onSave }
     setIsSocialInsurance(initialValues.isSocialInsurance);
     setStandardRemuneration(initialValues.standardRemuneration);
     setIsEmploymentInsurance(initialValues.isEmploymentInsurance);
+    setJoinedDate(initialValues.joinedDate);
+    setResignedDate(initialValues.resignedDate);
   };
 
   // ── 保存（DB分離: employeeMaster + contractMaster へ ） ──
@@ -306,6 +314,8 @@ export function EmployeeInfoTab({ employee, savedMaster, savedContract, onSave }
         ? (parseInt(standardRemuneration.replace(/[^0-9]/g, ""), 10) || 0)
         : 0,
       isEmploymentInsurance,
+      joinedDate,
+      resignedDate: resignedDate.trim() === "" ? null : resignedDate,
     };
     const contractInput = {
       salaryType,
@@ -396,6 +406,10 @@ export function EmployeeInfoTab({ employee, savedMaster, savedContract, onSave }
                 }}
                 placeholder={salaryType === "時給" ? "1,200" : salaryType === "日給" ? "12,000" : "300,000"}
                 inputMode="numeric" prefix="¥" className="sm:col-span-2 sm:max-w-[260px]" />
+              <FieldInput id="joinedDate" label="入社日"
+                value={joinedDate} onChange={setJoinedDate} type="date" />
+              <FieldInput id="resignedDate" label="退職日（在籍中は空欄）"
+                value={resignedDate} onChange={setResignedDate} type="date" />
             </div>
 
             {/* ─ 税金・社会保険情報 ─ */}

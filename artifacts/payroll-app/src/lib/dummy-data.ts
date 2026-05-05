@@ -34,6 +34,10 @@ export interface EmployeeMaster {
   isSocialInsurance: boolean;
   standardRemuneration: number;
   isEmploymentInsurance: boolean;
+  /** 入社日 "YYYY-MM-DD"（給与計算の在籍判定に使用） */
+  joinedDate: string;
+  /** 退職日 "YYYY-MM-DD"（在籍中は null。退職月の社会保険料判定等に使用） */
+  resignedDate: string | null;
 }
 
 // ─────────────────────────────────────────────
