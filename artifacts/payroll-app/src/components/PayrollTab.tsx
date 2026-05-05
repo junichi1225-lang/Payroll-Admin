@@ -10,6 +10,7 @@ import {
   HolidayType,
   NEW_WORKPLACE_COLORS,
   DEFAULT_TENANT_ID,
+  PREFECTURE_OPTIONS,
 } from "@/lib/dummy-data";
 import { useKeyedPersistedState } from "@/lib/usePersistedState";
 import { Switch } from "@/components/ui/switch";
@@ -913,6 +914,7 @@ function WorkplaceDialog({ open, onOpenChange, mode, initial, onSubmit }: Workpl
   const [rounding, setRounding] = useState<RoundingType>("1min");
   const [legal, setLegal] = useState<DayOfWeek>("Sunday");
   const [scheduled, setScheduled] = useState<DayOfWeek[]>(["Saturday"]);
+  const [prefecture, setPrefecture] = useState<string>(PREFECTURE_OPTIONS[0]);
 
   useEffect(() => {
     if (!open) return;
@@ -924,6 +926,7 @@ function WorkplaceDialog({ open, onOpenChange, mode, initial, onSubmit }: Workpl
       setRounding(initial.roundingRule);
       setLegal(initial.legalHoliday);
       setScheduled(initial.scheduledHoliday);
+      setPrefecture(initial.prefecture ?? PREFECTURE_OPTIONS[0]);
     } else {
       setName("");
       setStart("09:00");
@@ -932,6 +935,7 @@ function WorkplaceDialog({ open, onOpenChange, mode, initial, onSubmit }: Workpl
       setRounding("1min");
       setLegal("Sunday");
       setScheduled(["Saturday"]);
+      setPrefecture(PREFECTURE_OPTIONS[0]);
     }
   }, [open, mode, initial]);
 
@@ -947,6 +951,7 @@ function WorkplaceDialog({ open, onOpenChange, mode, initial, onSubmit }: Workpl
       tenantId: initial?.tenantId ?? DEFAULT_TENANT_ID,
       id: initial?.id ?? "",
       name: name.trim(),
+      prefecture,
       defaultStartTime: start,
       defaultEndTime: end,
       defaultRestMinutes: rest,
@@ -981,6 +986,19 @@ function WorkplaceDialog({ open, onOpenChange, mode, initial, onSubmit }: Workpl
               placeholder="例：渋谷店、本社オフィス"
               className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all"
             />
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="text-sm font-medium text-foreground">都道府県</label>
+            <Select value={prefecture} onValueChange={setPrefecture}>
+              <SelectTrigger className="w-full" aria-label="都道府県"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {PREFECTURE_OPTIONS.map((p) => (
+                  <SelectItem key={p} value={p}>{p}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">社会保険料率の計算に使用されます</p>
           </div>
 
           <div className="space-y-1.5">

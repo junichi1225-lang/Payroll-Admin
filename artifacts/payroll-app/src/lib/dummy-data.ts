@@ -52,11 +52,26 @@ export interface ContractMaster {
 // 職場マスタ DB
 // ─────────────────────────────────────────────
 
+/** 主要都道府県（社会保険料率の都道府県別計算用 — モックアップでは主要数件のみ） */
+export const PREFECTURE_OPTIONS = [
+  "東京都",
+  "神奈川県",
+  "埼玉県",
+  "千葉県",
+  "大阪府",
+  "愛知県",
+  "京都府",
+  "兵庫県",
+  "福岡県",
+  "北海道",
+] as const;
+
 export interface WorkplaceDef {
   tenantId: string;                 // マルチテナント識別子
   id: string;                       // 'w1', 'w2', 'wp_xxx'
   name: string;                     // 職場名
   color: string;                    // Tailwind classes
+  prefecture: string;               // 都道府県（社会保険料率の都道府県別計算用）
   defaultStartTime: string;         // 所定始業 "09:00"
   defaultEndTime: string;           // 所定終業 "18:00"
   defaultRestMinutes: number;       // 既定休憩(分)
@@ -70,6 +85,7 @@ export const DEFAULT_WORKPLACES: Record<string, WorkplaceDef> = {
     tenantId: DEFAULT_TENANT_ID,
     id: "w1", name: "職場A",
     color: "text-blue-600 bg-blue-50 border-blue-200",
+    prefecture: "東京都",
     defaultStartTime: "09:00", defaultEndTime: "18:00",
     defaultRestMinutes: 60, roundingRule: "1min",
     legalHoliday: "Sunday", scheduledHoliday: ["Saturday"],
@@ -78,6 +94,7 @@ export const DEFAULT_WORKPLACES: Record<string, WorkplaceDef> = {
     tenantId: DEFAULT_TENANT_ID,
     id: "w2", name: "職場B",
     color: "text-violet-600 bg-violet-50 border-violet-200",
+    prefecture: "神奈川県",
     defaultStartTime: "10:00", defaultEndTime: "19:00",
     defaultRestMinutes: 45, roundingRule: "15min",
     legalHoliday: "Sunday", scheduledHoliday: ["Saturday"],
