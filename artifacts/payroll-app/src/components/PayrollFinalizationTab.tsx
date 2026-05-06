@@ -21,7 +21,7 @@ interface PayrollFinalizationTabProps {
   contractDB: ContractMaster[];
   payrollResultDB: PayrollResult[];
   onLockOne: (result: PayrollResult) => void;
-  onUnlockOne: (id: string) => void;
+  onUnlockOne: (employeeId: string, targetYearMonth: string) => void;
   onLockAll: (results: PayrollResult[]) => void;
 }
 
@@ -46,6 +46,7 @@ export function PayrollFinalizationTab({
     return employees.map((emp) => {
       const locked = payrollResultDB.find(
         (p) =>
+          p != null &&
           p.employeeId === emp.id &&
           p.targetYearMonth === yyyymm &&
           p.status === "locked",
@@ -244,7 +245,7 @@ export function PayrollFinalizationTab({
                           確定済
                         </span>
                         <button
-                          onClick={() => onUnlockOne(row.snapshot.id)}
+                          onClick={() => onUnlockOne(row.emp.id, yyyymm)}
                           className="inline-flex items-center gap-1 text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors"
                           aria-label={`${row.emp.name}の確定を解除`}
                         >

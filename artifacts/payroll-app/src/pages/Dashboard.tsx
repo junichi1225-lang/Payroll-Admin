@@ -197,27 +197,76 @@ export default function Dashboard() {
   const [contractDB, setContractDB] = usePersistedState<ContractMaster[]>("mock_contractDB", []);
 
   // 給与確定スナップショット DB（マスタ変更後も金額が変動しないように保持）
+  // ユニーク制約: (tenantId, employeeId, targetYearMonth) — 1人 × 1月 = 1レコード
   const [payrollResultDB, setPayrollResultDB] = usePersistedState<PayrollResult[]>("mock_payrollResultDB", []);
-  const handleLockOne = (result: PayrollResult) => {
-    setPayrollResultDB((prev) => {
-      const idx = prev.findIndex((p) => p.id === result.id);
-      if (idx >= 0) {
-        const next = [...prev];
-        next[idx] = result;
-        return next;
-      }
-      return [...prev, result];
-    });
+
+  /**
+   * (tenantId, employeeId, targetYearMonth) を一意キーとする正規化。
+   * 配列に同一タプルの重複が混入していた場合（手動編集・レガシー等）も1件に圧縮する。
+   * 同タプルが複数あるときは「配列内で最後に現れたもの」を採用（last-write-wins）。
+   * 元の配列順序は最初の出現位置を維持する。
+   */
+  const tupleKey = (p: PayrollResult) =>
+    `${p.tenantId}::${p.employeeId}::${p.targetYearMonth}`;
+
+  const dedupeByTuple = (list: PayrollResult[]): PayrollResult[] => {
+    const lastByKey = new Map<string, PayrollResult>();
+    for (const p of list) lastByKey.set(tupleKey(p), p);
+    const seen = new Set<string>();
+    const out: PayrollResult[] = [];
+    for (const p of list) {
+      const k = tupleKey(p);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push(lastByKey.get(k)!);
+    }
+    return out;
   };
-  const handleUnlockOne = (id: string) => {
-    setPayrollResultDB((prev) => prev.filter((p) => p.id !== id));
+
+  /**
+   * タプルキー一意性を保証する upsert。
+   * 既存に同一タプルがあれば(複数あっても全て)除去し、incoming を末尾に追加する。
+   * 既存 id があれば保持（最初の一致のものを再利用）。
+   */
+  const upsertPayrollResult = (
+    list: PayrollResult[],
+    incoming: PayrollResult,
+  ): PayrollResult[] => {
+    const matchTuple = (p: PayrollResult) =>
+      p.tenantId === incoming.tenantId &&
+      p.employeeId === incoming.employeeId &&
+      p.targetYearMonth === incoming.targetYearMonth;
+    const existing = list.find(matchTuple);
+    const stripped = list.filter((p) => !matchTuple(p));
+    const merged: PayrollResult = existing
+      ? { ...incoming, id: existing.id }
+      : incoming;
+    return [...stripped, merged];
+  };
+
+  const handleLockOne = (result: PayrollResult) => {
+    setPayrollResultDB((prev) => upsertPayrollResult(prev, result));
+  };
+  /**
+   * 解除はタプル基準で行う（同タプルに重複idが残っていても全て除去）。
+   * id を直接受け取って filter すると重複行のうち1件しか消えないため、
+   * 解除対象の (employeeId, targetYearMonth) を渡してもらう。
+   */
+  const handleUnlockOne = (employeeId: string, targetYearMonth: string) => {
+    setPayrollResultDB((prev) =>
+      prev.filter(
+        (p) =>
+          !(
+            p != null &&
+            p.tenantId === DEFAULT_TENANT_ID &&
+            p.employeeId === employeeId &&
+            p.targetYearMonth === targetYearMonth
+          ),
+      ),
+    );
   };
   const handleLockAll = (results: PayrollResult[]) => {
-    setPayrollResultDB((prev) => {
-      const map = new Map(prev.map((p) => [p.id, p]));
-      for (const r of results) map.set(r.id, r);
-      return Array.from(map.values());
-    });
+    setPayrollResultDB((prev) => results.reduce(upsertPayrollResult, prev));
   };
   const handleSaveEmployeeMaster = (
     master: EmployeeMaster,
