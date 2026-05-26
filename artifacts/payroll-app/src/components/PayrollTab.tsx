@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, Fragment, useMemo } from "react";
-import { calculateIncomeTax, calcEffectiveRate } from "@/lib/taxCalculator";
+import { calculateIncomeTax } from "@/lib/taxCalculator";
 import {
   getTimecardEntries,
   TimecardEntry,
@@ -11,8 +11,20 @@ import {
   NEW_WORKPLACE_COLORS,
   DEFAULT_TENANT_ID,
   PREFECTURE_OPTIONS,
+  EmployeeMaster,
+  PayrollResult,
 } from "@/lib/dummy-data";
+import {
+  calculateHealthInsurance,
+  isNursingCareInsuranceTarget,
+  HEALTH_INSURANCE_RATE,
+  NURSING_CARE_INSURANCE_RATE,
+} from "@/lib/insurance";
+import { buildPayrollResultId, toYearMonth } from "@/lib/payrollCalc";
 import { useKeyedPersistedState } from "@/lib/usePersistedState";
+import {
+  Accordion, AccordionItem, AccordionTrigger, AccordionContent,
+} from "@/components/ui/accordion";
 import { Switch } from "@/components/ui/switch";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectSeparator,
@@ -227,24 +239,48 @@ function PayTypePills({ value, onChange }: { value: PayType; onChange: (v: PayTy
   );
 }
 
-function MonthlyInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+function MonthlyInput({
+  value, onChange, previousGross,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  previousGross: number;
+}) {
   const hasValue = value.replace(/[^0-9]/g, "").length > 0;
+  const canCopyPrev = previousGross > 0;
   return (
     <div className="space-y-1.5">
       <label className="block text-sm font-semibold text-foreground">月給(円)</label>
       <p className="text-xs text-muted-foreground">社会保険料控除前の総支給額を入力してください</p>
-      <div className="relative mt-1">
-        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-semibold select-none">¥</span>
-        <input
-          type="text" inputMode="numeric" value={value} placeholder="300,000"
-          onChange={(e) => { const d = e.target.value.replace(/[^0-9]/g, ""); onChange(toDisplayValue(d)); }}
+      <div className="relative mt-1 flex items-stretch gap-2">
+        <div className="relative flex-1">
+          <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-semibold select-none">¥</span>
+          <input
+            type="text" inputMode="numeric" value={value} placeholder="300,000"
+            onChange={(e) => { const d = e.target.value.replace(/[^0-9]/g, ""); onChange(toDisplayValue(d)); }}
+            className={cn(
+              "w-full pl-8 pr-4 py-3.5 rounded-xl border bg-background text-foreground text-base font-medium",
+              "focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all",
+              "placeholder:text-muted-foreground/40",
+              hasValue ? "border-primary/30" : "border-border"
+            )}
+          />
+        </div>
+        <button
+          type="button"
+          onClick={() => canCopyPrev && onChange(toDisplayValue(String(previousGross)))}
+          disabled={!canCopyPrev}
+          data-testid="copy-prev-month"
           className={cn(
-            "w-full pl-8 pr-4 py-3.5 rounded-xl border bg-background text-foreground text-base font-medium",
-            "focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all",
-            "placeholder:text-muted-foreground/40",
-            hasValue ? "border-primary/30" : "border-border"
+            "flex-shrink-0 px-3 py-2 rounded-xl border text-xs font-semibold transition-colors whitespace-nowrap",
+            canCopyPrev
+              ? "border-primary/30 text-primary bg-primary/5 hover:bg-primary/10"
+              : "border-border text-muted-foreground/50 bg-muted/30 cursor-not-allowed",
           )}
-        />
+          title={canCopyPrev ? `前月の総支給額 ${formatJPY(previousGross)} を入力` : "前月のデータがありません"}
+        >
+          前月と同様
+        </button>
       </div>
     </div>
   );
@@ -842,54 +878,244 @@ function HourlySection(props: {
 // 計算結果カード
 // ─────────────────────────────────────────────
 
-function ResultCard({ grossAmount, payType, currentDate }: { grossAmount: number; payType: PayType; currentDate: Date }) {
-  const incomeTax = calculateIncomeTax(grossAmount);
-  const effectiveRate = calcEffectiveRate(grossAmount);
-  const hasValue = grossAmount > 0;
+// ─────────────────────────────────────────────
+// 控除額内訳（モックアップ用の簡易計算）
+// ─────────────────────────────────────────────
+interface DeductionBreakdown {
+  health: number;          // 健康保険料（労使折半後の従業員負担）
+  nursingCare: number;     // 介護保険料（40歳以上のみ）
+  childcare: number;       // こども子育て支援金
+  pension: number;         // 厚生年金保険料
+  labor: number;           // 労働保険（雇用保険・従業員負担）
+  incomeTax: number;       // 所得税（源泉徴収）
+  residentTax: number;     // 住民税
+  total: number;
+  isNursingCareTarget: boolean;
+}
+
+function calcDeductions(
+  grossAmount: number,
+  master: EmployeeMaster | undefined,
+  yyyymm: string,
+): DeductionBreakdown {
+  const enrolled = !!master?.isSocialInsurance && (master?.standardRemuneration ?? 0) > 0;
+  const standardRem = enrolled ? master!.standardRemuneration : 0;
+  const isNursingCareTarget = enrolled && !!master
+    ? isNursingCareInsuranceTarget(master.birthDate, yyyymm)
+    : false;
+
+  // 健康保険(基本部分) — 標準報酬月額 × 料率 × 折半
+  const health = enrolled
+    ? Math.floor(standardRem * HEALTH_INSURANCE_RATE / 2)
+    : 0;
+  // 介護保険(40歳以上) — 上乗せ分
+  const nursingCare = isNursingCareTarget
+    ? Math.floor(standardRem * NURSING_CARE_INSURANCE_RATE / 2)
+    : 0;
+  // こども子育て支援金 — 標準報酬 × 0.36% × 折半 (令和8年度導入予定の試算)
+  const childcare = enrolled ? Math.floor(standardRem * 0.0036 / 2) : 0;
+  // 厚生年金 — 18.3% 労使折半
+  const pension = enrolled ? Math.floor(standardRem * 0.183 / 2) : 0;
+  // 雇用保険（労働保険のうち従業員負担分） — 総支給 × 0.6%
+  const labor = grossAmount > 0 ? Math.floor(grossAmount * 0.006) : 0;
+  // 所得税 — 社保控除後の金額をベースに簡易計算
+  const taxableBase = Math.max(0, grossAmount - health - nursingCare - pension - labor);
+  const incomeTax = grossAmount > 0 ? calculateIncomeTax(taxableBase) : 0;
+  // 住民税 — モック固定（前年所得ベースの目安）
+  const residentTax = grossAmount > 0 ? 12_000 : 0;
+
+  const total = health + nursingCare + childcare + pension + labor + incomeTax + residentTax;
+  return { health, nursingCare, childcare, pension, labor, incomeTax, residentTax, total, isNursingCareTarget };
+}
+
+// ─────────────────────────────────────────────
+// 計算結果カード
+// ─────────────────────────────────────────────
+
+interface ResultCardProps {
+  grossAmount: number;
+  payType: PayType;
+  currentDate: Date;
+  master: EmployeeMaster | undefined;
+  previousMonth: { gross: number; incomeTax: number };
+  isLocked: boolean;
+  canLock: boolean;
+  onLock: (deductions: DeductionBreakdown) => void;
+  onUnlock: () => void;
+}
+
+function DeductionRow({ label, amount, hint, faded }: { label: string; amount: number; hint?: string; faded?: boolean }) {
   return (
-    <div className="bg-card border border-border rounded-2xl p-5 shadow-sm space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <TrendingUp className="w-4 h-4 text-primary" />
-          <span className="text-sm font-bold text-foreground">支給額・控除額シミュレーション</span>
-        </div>
-        <span className="text-xs text-muted-foreground">{monthLabel(currentDate)}</span>
+    <div className={cn(
+      "flex items-center justify-between py-2 px-1 text-xs border-b border-border/40 last:border-b-0",
+      faded && "opacity-50",
+    )}>
+      <div className="flex items-center gap-1.5 text-muted-foreground">
+        <span>{label}</span>
+        {hint && <span className="text-[10px] text-muted-foreground/70">({hint})</span>}
       </div>
-      <div className="border-t border-border/60" />
-      <div className="space-y-1">
-        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-          {payType === "monthly" ? "月給制" : "時給制(時給 × 正味労働時間)"}
-        </p>
-        <div className="flex items-baseline gap-2">
-          <span className="text-3xl font-bold tabular-nums tracking-tight text-foreground">
-            {hasValue ? formatJPY(grossAmount) : "¥ —"}
-          </span>
-          <span className="text-xs text-muted-foreground">(総支給額)</span>
+      <span className="font-semibold tabular-nums text-foreground">{formatJPY(amount)}</span>
+    </div>
+  );
+}
+
+function ResultCard({
+  grossAmount, payType, currentDate, master,
+  previousMonth, isLocked, canLock, onLock, onUnlock,
+}: ResultCardProps) {
+  const yyyymm = toYearMonth(currentDate.getFullYear(), currentDate.getMonth() + 1);
+  const deductions = calcDeductions(grossAmount, master, yyyymm);
+  const hasValue = grossAmount > 0;
+  const currentNet = Math.max(0, grossAmount - deductions.total);
+  const prevNet = Math.max(0, previousMonth.gross - previousMonth.incomeTax);
+
+  return (
+    <div className="space-y-4">
+      {/* サマリー */}
+      <div className="bg-card border border-border rounded-2xl p-5 shadow-sm space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <TrendingUp className="w-4 h-4 text-primary" />
+            <span className="text-sm font-bold text-foreground">支給額・控除額シミュレーション</span>
+          </div>
+          <span className="text-xs text-muted-foreground">{monthLabel(currentDate)}</span>
         </div>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div className="bg-primary/5 border border-primary/20 rounded-xl px-4 py-3 space-y-1">
-          <p className="text-xs font-semibold text-muted-foreground">源泉徴収税額(月額)</p>
-          <p className={cn("text-xl font-bold tabular-nums", hasValue && incomeTax > 0 ? "text-primary" : "text-muted-foreground/40")}>
-            {hasValue ? formatJPY(incomeTax) : "¥ —"}
+        <div className="border-t border-border/60" />
+
+        {/* 総支給額 */}
+        <div className="space-y-1">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+            {payType === "monthly" ? "月給制" : "時給制(時給 × 正味労働時間)"}
           </p>
+          <div className="flex items-baseline gap-2">
+            <span className="text-3xl font-bold tabular-nums tracking-tight text-foreground">
+              {hasValue ? formatJPY(grossAmount) : "¥ —"}
+            </span>
+            <span className="text-xs text-muted-foreground">(総支給額)</span>
+          </div>
         </div>
-        <div className="bg-muted/40 border border-border/60 rounded-xl px-4 py-3 space-y-1">
-          <p className="text-xs font-semibold text-muted-foreground">実効税率</p>
-          <p className={cn("text-xl font-bold tabular-nums", hasValue ? "text-foreground" : "text-muted-foreground/40")}>
-            {hasValue ? `${effectiveRate.toFixed(2)} %` : "— %"}
-          </p>
+
+        {/* 2列×2行: 当月/前月 × 支給額/源泉徴収 */}
+        <div className="grid grid-cols-2 gap-3">
+          {/* 当月支給額 */}
+          <div className="bg-primary/5 border border-primary/20 rounded-xl px-4 py-3 space-y-1" data-testid="current-net">
+            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">当月の支給額</p>
+            <p className={cn("text-lg font-bold tabular-nums", hasValue ? "text-primary" : "text-muted-foreground/40")}>
+              {hasValue ? formatJPY(currentNet) : "¥ —"}
+            </p>
+            <p className="text-[10px] text-muted-foreground">総支給 − 控除合計</p>
+          </div>
+          {/* 当月源泉徴収 */}
+          <div className="bg-primary/5 border border-primary/20 rounded-xl px-4 py-3 space-y-1" data-testid="current-tax">
+            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">当月の源泉徴収額</p>
+            <p className={cn("text-lg font-bold tabular-nums", hasValue && deductions.incomeTax > 0 ? "text-primary" : "text-muted-foreground/40")}>
+              {hasValue ? formatJPY(deductions.incomeTax) : "¥ —"}
+            </p>
+            <p className="text-[10px] text-muted-foreground">所得税(月額表)</p>
+          </div>
+          {/* 前月支給額 */}
+          <div className="bg-muted/40 border border-border/60 rounded-xl px-4 py-3 space-y-1" data-testid="prev-net">
+            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">前月の支給額</p>
+            <p className="text-lg font-bold tabular-nums text-foreground">
+              {previousMonth.gross > 0 ? formatJPY(prevNet) : "¥ —"}
+            </p>
+            <p className="text-[10px] text-muted-foreground">参考値</p>
+          </div>
+          {/* 前月源泉徴収 */}
+          <div className="bg-muted/40 border border-border/60 rounded-xl px-4 py-3 space-y-1" data-testid="prev-tax">
+            <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">前月の源泉徴収額</p>
+            <p className="text-lg font-bold tabular-nums text-foreground">
+              {previousMonth.gross > 0 ? formatJPY(previousMonth.incomeTax) : "¥ —"}
+            </p>
+            <p className="text-[10px] text-muted-foreground">参考値</p>
+          </div>
         </div>
+
+        {hasValue && grossAmount < 88_000 && (
+          <p className="text-xs text-muted-foreground px-1">月額 88,000 円未満のため源泉徴収なし</p>
+        )}
       </div>
-      {hasValue && (
-        <div className="flex items-center justify-between text-xs text-muted-foreground px-1 pt-1">
-          <span>差引支給額(税引後・参考値)</span>
-          <span className="font-bold text-foreground tabular-nums">{formatJPY(grossAmount - incomeTax)}</span>
-        </div>
-      )}
-      {hasValue && grossAmount < 88_000 && (
-        <p className="text-xs text-muted-foreground px-1">月額 88,000 円未満のため源泉徴収なし</p>
-      )}
+
+      {/* 控除額 アコーディオン */}
+      <div className="bg-card border border-border rounded-2xl shadow-sm overflow-hidden">
+        <Accordion type="single" collapsible defaultValue={undefined}>
+          <AccordionItem value="deductions" className="border-b-0">
+            <AccordionTrigger
+              className="px-5 py-4 hover:no-underline"
+              data-testid="deduction-toggle"
+            >
+              <div className="flex items-center justify-between w-full pr-2">
+                <div className="flex items-center gap-2">
+                  <Plus className="w-4 h-4 text-primary" />
+                  <span className="text-sm font-bold text-foreground">控除額合計</span>
+                </div>
+                <span className={cn(
+                  "text-xl font-bold tabular-nums",
+                  hasValue ? "text-foreground" : "text-muted-foreground/40",
+                )}
+                  data-testid="deduction-total"
+                >
+                  {hasValue ? formatJPY(deductions.total) : "¥ —"}
+                </span>
+              </div>
+            </AccordionTrigger>
+            <AccordionContent className="px-5">
+              <div className="rounded-xl bg-muted/20 border border-border/40 px-3 py-1">
+                <DeductionRow label="健康保険料" amount={deductions.health} />
+                <DeductionRow
+                  label="介護保険料"
+                  amount={deductions.nursingCare}
+                  hint={deductions.isNursingCareTarget ? "40歳以上" : "対象外"}
+                  faded={!deductions.isNursingCareTarget}
+                />
+                <DeductionRow label="こども子育て支援金" amount={deductions.childcare} />
+                <DeductionRow label="厚生年金保険料" amount={deductions.pension} />
+                <DeductionRow label="労働保険" amount={deductions.labor} hint="雇用保険・従業員負担" />
+                <DeductionRow label="所得税" amount={deductions.incomeTax} />
+                <DeductionRow label="住民税" amount={deductions.residentTax} />
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-2 px-1">
+                ※ 各項目は標準報酬月額・総支給額に基づくモックアップ計算です。
+              </p>
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
+      </div>
+
+      {/* 確定ボタン */}
+      <div className="flex items-center gap-3">
+        {isLocked ? (
+          <>
+            <div className="flex-1 flex items-center justify-center gap-2 px-5 py-3.5 rounded-xl bg-green-50 border border-green-200 text-green-700">
+              <CheckCircle2 className="w-4 h-4" />
+              <span className="text-sm font-bold">{monthLabel(currentDate)} 確定済</span>
+            </div>
+            <button
+              type="button"
+              onClick={onUnlock}
+              data-testid="unlock-month"
+              className="px-4 py-3.5 rounded-xl border border-border text-sm font-semibold text-muted-foreground hover:bg-muted transition-colors"
+            >
+              解除
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => onLock(deductions)}
+            disabled={!canLock || !hasValue}
+            data-testid="lock-month"
+            className={cn(
+              "w-full px-5 py-3.5 rounded-xl text-base font-bold transition-all",
+              canLock && hasValue
+                ? "bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm hover:shadow"
+                : "bg-muted text-muted-foreground/50 cursor-not-allowed",
+            )}
+          >
+            {monthLabel(currentDate)} の給与を確定
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -1103,9 +1329,16 @@ interface PayrollTabProps {
   workplaces: Record<string, WorkplaceDef>;
   onAddWorkplace: (key: string, def: WorkplaceDef) => void;
   onUpdateWorkplace: (id: string, def: WorkplaceDef) => void;
+  employeeDB: Record<string, EmployeeMaster>;
+  payrollResultDB: PayrollResult[];
+  onLockOne: (result: PayrollResult) => void;
+  onUnlockOne: (employeeId: string, targetYearMonth: string) => void;
 }
 
-export function PayrollTab({ currentDate, employeeId, workplaces, onAddWorkplace, onUpdateWorkplace }: PayrollTabProps) {
+export function PayrollTab({
+  currentDate, employeeId, workplaces, onAddWorkplace, onUpdateWorkplace,
+  employeeDB, payrollResultDB, onLockOne, onUnlockOne,
+}: PayrollTabProps) {
   const [payType, setPayType] = useState<PayType>("monthly");
   const [monthlySalaryInput, setMonthlySalaryInput] = useState("");
   const [hourlyRateInput, setHourlyRateInput] = useState("");
@@ -1293,6 +1526,63 @@ export function PayrollTab({ currentDate, employeeId, workplaces, onAddWorkplace
   const hourlyRaw  = parseInt(hourlyRateInput.replace(/[^0-9]/g, ""), 10) || 0;
   const grossAmount = payType === "monthly" ? monthlyRaw : Math.round(hourlyRaw * totalHours);
 
+  // 前月給与の取得（PayrollResultDB → なければモックダミー）
+  const yyyymm = toYearMonth(year, month);
+  const prevDate = new Date(year, month - 2, 1);
+  const prevYM = toYearMonth(prevDate.getFullYear(), prevDate.getMonth() + 1);
+  const prevSnapshot = useMemo(
+    () => payrollResultDB.find(
+      (p) => p != null && p.employeeId === employeeId && p.targetYearMonth === prevYM,
+    ),
+    [payrollResultDB, employeeId, prevYM],
+  );
+  const previousMonth = useMemo(() => {
+    if (prevSnapshot) {
+      return {
+        gross: prevSnapshot.totalPayment,
+        incomeTax: calculateIncomeTax(prevSnapshot.totalPayment),
+      };
+    }
+    // モックダミー（前月データ未確定時）
+    return { gross: 298_000, incomeTax: calculateIncomeTax(298_000) };
+  }, [prevSnapshot]);
+
+  // 当月ロック状態
+  const lockedSnapshot = useMemo(
+    () => payrollResultDB.find(
+      (p) =>
+        p != null &&
+        p.employeeId === employeeId &&
+        p.targetYearMonth === yyyymm &&
+        p.status === "locked",
+    ),
+    [payrollResultDB, employeeId, yyyymm],
+  );
+
+  const master = employeeDB[employeeId];
+
+  const handleLock = (deductions: DeductionBreakdown) => {
+    const result: PayrollResult = {
+      tenantId: DEFAULT_TENANT_ID,
+      id: buildPayrollResultId(employeeId, year, month),
+      employeeId,
+      targetYearMonth: yyyymm,
+      status: "locked",
+      appliedSalaryType: payType === "monthly" ? "月給" : "時給",
+      appliedBaseSalary: payType === "monthly" ? monthlyRaw : hourlyRaw,
+      totalWorkingHours: payType === "hourly"
+        ? Math.round(totalHours * 100) / 100
+        : 0,
+      totalPayment: grossAmount,
+      totalDeduction: deductions.total,
+      netPay: Math.max(0, grossAmount - deductions.total),
+      lockedAt: new Date().toISOString(),
+    };
+    onLockOne(result);
+  };
+
+  const handleUnlock = () => onUnlockOne(employeeId, yyyymm);
+
   const tableHandlers: Omit<TimecardTableProps, "rows" | "currentDate" | "totalHours" | "monthlyBuckets"> = {
     workplaces,
     onWorkplaceChange: handleWorkplaceChange,
@@ -1326,7 +1616,11 @@ export function PayrollTab({ currentDate, employeeId, workplaces, onAddWorkplace
 
       <div className="bg-card border border-border rounded-2xl p-5 shadow-sm space-y-5">
         {payType === "monthly" ? (
-          <MonthlyInput value={monthlySalaryInput} onChange={setMonthlySalaryInput} />
+          <MonthlyInput
+            value={monthlySalaryInput}
+            onChange={setMonthlySalaryInput}
+            previousGross={previousMonth.gross}
+          />
         ) : (
           <HourlySection
             hourlyRate={hourlyRateInput} onHourlyRateChange={setHourlyRateInput}
@@ -1337,7 +1631,17 @@ export function PayrollTab({ currentDate, employeeId, workplaces, onAddWorkplace
         )}
       </div>
 
-      <ResultCard grossAmount={grossAmount} payType={payType} currentDate={currentDate} />
+      <ResultCard
+        grossAmount={grossAmount}
+        payType={payType}
+        currentDate={currentDate}
+        master={master}
+        previousMonth={previousMonth}
+        isLocked={!!lockedSnapshot}
+        canLock={true}
+        onLock={handleLock}
+        onUnlock={handleUnlock}
+      />
 
       <div className="flex items-start gap-2 text-xs text-muted-foreground">
         <Info className="w-4 h-4 flex-shrink-0 mt-0.5 text-primary/40" />

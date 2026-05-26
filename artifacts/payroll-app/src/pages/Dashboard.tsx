@@ -466,6 +466,10 @@ export default function Dashboard() {
                           workplaces={workplaces}
                           onAddWorkplace={handleAddWorkplace}
                           onUpdateWorkplace={handleUpdateWorkplace}
+                          employeeDB={employeeDB}
+                          payrollResultDB={payrollResultDB}
+                          onLockOne={handleLockOne}
+                          onUnlockOne={handleUnlockOne}
                         />
                       ) : activeTab === "info" ? (
                         <EmployeeInfoTab
