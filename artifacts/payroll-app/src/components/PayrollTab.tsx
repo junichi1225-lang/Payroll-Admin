@@ -925,8 +925,8 @@ function calcDeductions(
   // 所得税 — 社保控除後の金額をベースに簡易計算
   const taxableBase = Math.max(0, grossAmount - health - nursingCare - pension - labor);
   const incomeTax = grossAmount > 0 ? calculateIncomeTax(taxableBase) : 0;
-  // 住民税 — モック固定（前年所得ベースの目安）
-  const residentTax = grossAmount > 0 ? 12_000 : 0;
+  // 住民税 — 従業員マスタの residentTax（決定通知書の月額）をそのまま引き当て
+  const residentTax = grossAmount > 0 ? (master?.residentTax ?? 0) : 0;
 
   const total = health + nursingCare + childcare + pension + labor + incomeTax + residentTax;
   return { health, nursingCare, childcare, pension, labor, incomeTax, residentTax, total, isNursingCareTarget };

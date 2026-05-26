@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { MonthSwitcher } from "@/components/MonthSwitcher";
-import { DUMMY_EMPLOYEE_DATA, EmployeeRecord, EmployeeColor, DEFAULT_WORKPLACES, WorkplaceDef, EmployeeMaster, ContractMaster, PayrollResult, DEFAULT_TENANT_ID } from "@/lib/dummy-data";
+import { DUMMY_EMPLOYEE_DATA, EmployeeRecord, EmployeeColor, DEFAULT_WORKPLACES, WorkplaceDef, EmployeeMaster, ContractMaster, PayrollResult, DEFAULT_TENANT_ID, DEFAULT_EMPLOYEE_MASTERS } from "@/lib/dummy-data";
 import { usePersistedState } from "@/lib/usePersistedState";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
@@ -207,8 +207,37 @@ export default function Dashboard() {
   };
 
   // 従業員マスタ DB / 契約マスタ DB（localStorage 同期 — モックアップデモ用）
-  const [employeeDB, setEmployeeDB] = usePersistedState<Record<string, EmployeeMaster>>("mock_employeeDB", {});
+  const [employeeDB, setEmployeeDB] = usePersistedState<Record<string, EmployeeMaster>>("mock_employeeDB", DEFAULT_EMPLOYEE_MASTERS);
   const [contractDB, setContractDB] = usePersistedState<ContractMaster[]>("mock_contractDB", []);
+
+  /**
+   * 旧バージョンの localStorage 互換マイグレーション。
+   * - `mock_employeeDB` が `{}` のまま保存されている既存ユーザにダミー社員マスタをシード
+   * - `residentTax` 等の新フィールドが欠落しているレコードを DEFAULT_EMPLOYEE_MASTERS から補完
+   * 1度きり実行（補完が不要なら setState は呼ばない＝再レンダリングを発生させない）。
+   */
+  useEffect(() => {
+    setEmployeeDB((prev) => {
+      const seedIds = Object.keys(DEFAULT_EMPLOYEE_MASTERS);
+      let mutated = false;
+      const next: Record<string, EmployeeMaster> = { ...prev };
+      for (const id of seedIds) {
+        const seed = DEFAULT_EMPLOYEE_MASTERS[id];
+        const cur = next[id];
+        if (!cur) {
+          next[id] = seed;
+          mutated = true;
+          continue;
+        }
+        if (typeof cur.residentTax !== "number") {
+          next[id] = { ...cur, residentTax: seed.residentTax };
+          mutated = true;
+        }
+      }
+      return mutated ? next : prev;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // 給与確定スナップショット DB（マスタ変更後も金額が変動しないように保持）
   // ユニーク制約: (tenantId, employeeId, targetYearMonth) — 1人 × 1月 = 1レコード

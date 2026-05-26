@@ -34,11 +34,96 @@ export interface EmployeeMaster {
   isSocialInsurance: boolean;
   standardRemuneration: number;
   isEmploymentInsurance: boolean;
+  /**
+   * 住民税額（月額・円）
+   * 自治体から届く特別徴収税額決定通知書の月額をそのまま登録する運用。
+   * 前年所得が無い新卒・退職者等は 0 を設定する。
+   */
+  residentTax: number;
   /** 入社日 "YYYY-MM-DD"（給与計算の在籍判定に使用） */
   joinedDate: string;
   /** 退職日 "YYYY-MM-DD"（在籍中は null。退職月の社会保険料判定等に使用） */
   resignedDate: string | null;
 }
+
+/**
+ * 従業員マスタの初期ダミーデータ。
+ * モックアップ表示のため住民税額のみ予め設定済（その他は社員情報フォームから入力する想定）。
+ * 既存 localStorage に保存済みのマスタが優先される。
+ */
+export const DEFAULT_EMPLOYEE_MASTERS: Record<string, EmployeeMaster> = {
+  e1: {
+    tenantId: DEFAULT_TENANT_ID, id: "e1",
+    lastName: "山田", firstName: "太郎",
+    lastNameKana: "ヤマダ", firstNameKana: "タロウ",
+    birthDate: "1985-04-12",
+    postalCode: "", address: "", phoneNumber: "",
+    pensionNumber: "", employmentInsuranceNumber: "",
+    employmentType: "正社員", taxCategory: "甲欄",
+    dependentsCount: 1,
+    isSocialInsurance: true, standardRemuneration: 320000,
+    isEmploymentInsurance: true,
+    residentTax: 14200,
+    joinedDate: "2019-04-01", resignedDate: null,
+  },
+  e2: {
+    tenantId: DEFAULT_TENANT_ID, id: "e2",
+    lastName: "鈴木", firstName: "花子",
+    lastNameKana: "スズキ", firstNameKana: "ハナコ",
+    birthDate: "1992-08-22",
+    postalCode: "", address: "", phoneNumber: "",
+    pensionNumber: "", employmentInsuranceNumber: "",
+    employmentType: "正社員", taxCategory: "甲欄",
+    dependentsCount: 0,
+    isSocialInsurance: true, standardRemuneration: 280000,
+    isEmploymentInsurance: true,
+    residentTax: 8500,
+    joinedDate: "2020-07-15", resignedDate: null,
+  },
+  e3: {
+    tenantId: DEFAULT_TENANT_ID, id: "e3",
+    lastName: "田中", firstName: "一郎",
+    lastNameKana: "タナカ", firstNameKana: "イチロウ",
+    birthDate: "1980-02-03",
+    postalCode: "", address: "", phoneNumber: "",
+    pensionNumber: "", employmentInsuranceNumber: "",
+    employmentType: "正社員", taxCategory: "甲欄",
+    dependentsCount: 2,
+    isSocialInsurance: true, standardRemuneration: 380000,
+    isEmploymentInsurance: true,
+    residentTax: 21800,
+    joinedDate: "2018-01-10", resignedDate: null,
+  },
+  e4: {
+    tenantId: DEFAULT_TENANT_ID, id: "e4",
+    lastName: "伊藤", firstName: "美咲",
+    lastNameKana: "イトウ", firstNameKana: "ミサキ",
+    birthDate: "2001-11-30",
+    postalCode: "", address: "", phoneNumber: "",
+    pensionNumber: "", employmentInsuranceNumber: "",
+    employmentType: "正社員", taxCategory: "甲欄",
+    dependentsCount: 0,
+    isSocialInsurance: true, standardRemuneration: 220000,
+    isEmploymentInsurance: true,
+    // 新卒入社のため前年所得なし → 1年目の住民税は 0
+    residentTax: 0,
+    joinedDate: "2022-10-01", resignedDate: null,
+  },
+  e5: {
+    tenantId: DEFAULT_TENANT_ID, id: "e5",
+    lastName: "渡辺", firstName: "健一",
+    lastNameKana: "ワタナベ", firstNameKana: "ケンイチ",
+    birthDate: "1975-09-08",
+    postalCode: "", address: "", phoneNumber: "",
+    pensionNumber: "", employmentInsuranceNumber: "",
+    employmentType: "正社員", taxCategory: "甲欄",
+    dependentsCount: 3,
+    isSocialInsurance: true, standardRemuneration: 420000,
+    isEmploymentInsurance: true,
+    residentTax: 26500,
+    joinedDate: "2017-06-01", resignedDate: null,
+  },
+};
 
 // ─────────────────────────────────────────────
 // 契約・単価マスタ DB（職場別の給与契約）

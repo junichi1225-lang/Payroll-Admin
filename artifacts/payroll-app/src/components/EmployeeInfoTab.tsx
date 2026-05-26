@@ -177,6 +177,7 @@ export function EmployeeInfoTab({ employee, savedMaster, savedContract, onSave }
         employmentType: savedMaster.employmentType,
         taxCategory: savedMaster.taxCategory,
         dependentsCount: String(savedMaster.dependentsCount),
+        residentTax: savedMaster.residentTax > 0 ? String(savedMaster.residentTax) : "",
         isSocialInsurance: savedMaster.isSocialInsurance,
         standardRemuneration: savedMaster.standardRemuneration > 0 ? String(savedMaster.standardRemuneration) : "",
         isEmploymentInsurance: savedMaster.isEmploymentInsurance,
@@ -195,6 +196,7 @@ export function EmployeeInfoTab({ employee, savedMaster, savedContract, onSave }
       employmentType: "正社員" as EmploymentType,
       taxCategory: "甲欄" as TaxCategory,
       dependentsCount: "0",
+      residentTax: "",
       isSocialInsurance: false,
       standardRemuneration: "",
       isEmploymentInsurance: false,
@@ -223,6 +225,7 @@ export function EmployeeInfoTab({ employee, savedMaster, savedContract, onSave }
   const [baseSalary, setBaseSalary] = useState(initialValues.baseSalary);
   const [taxCategory, setTaxCategory] = useState<TaxCategory>(initialValues.taxCategory);
   const [dependentsCount, setDependentsCount] = useState(initialValues.dependentsCount);
+  const [residentTax, setResidentTax] = useState(initialValues.residentTax);
   const [isSocialInsurance, setIsSocialInsurance] = useState(initialValues.isSocialInsurance);
   const [standardRemuneration, setStandardRemuneration] = useState(initialValues.standardRemuneration);
   const [isEmploymentInsurance, setIsEmploymentInsurance] = useState(initialValues.isEmploymentInsurance);
@@ -285,6 +288,7 @@ export function EmployeeInfoTab({ employee, savedMaster, savedContract, onSave }
     setBaseSalary(initialValues.baseSalary);
     setTaxCategory(initialValues.taxCategory);
     setDependentsCount(initialValues.dependentsCount);
+    setResidentTax(initialValues.residentTax);
     setIsSocialInsurance(initialValues.isSocialInsurance);
     setStandardRemuneration(initialValues.standardRemuneration);
     setIsEmploymentInsurance(initialValues.isEmploymentInsurance);
@@ -309,6 +313,7 @@ export function EmployeeInfoTab({ employee, savedMaster, savedContract, onSave }
       employmentType,
       taxCategory,
       dependentsCount: parseInt(dependentsCount, 10) || 0,
+      residentTax: parseInt(residentTax.replace(/[^0-9]/g, ""), 10) || 0,
       isSocialInsurance,
       standardRemuneration: isSocialInsurance
         ? (parseInt(standardRemuneration.replace(/[^0-9]/g, ""), 10) || 0)
@@ -420,7 +425,18 @@ export function EmployeeInfoTab({ employee, savedMaster, savedContract, onSave }
               <FieldInput id="dependents" label="扶養親族数"
                 value={dependentsCount} onChange={(v) => setDependentsCount(v.replace(/[^0-9]/g, ""))}
                 type="number" min={0} step={1} inputMode="numeric" />
+              <FieldInput id="residentTax" label="住民税額（円）"
+                value={residentTax} onChange={(v) => {
+                  const d = v.replace(/[^0-9]/g, "");
+                  setResidentTax(d ? parseInt(d, 10).toLocaleString("ja-JP") : "");
+                }}
+                placeholder="14,200" inputMode="numeric" prefix="¥"
+                className="sm:col-span-2 sm:max-w-[260px]" />
             </div>
+            <p className="text-[11px] text-muted-foreground/70 -mt-2 pl-0.5">
+              ※ 自治体から届く「特別徴収税額決定通知書」の月額をそのまま入力してください。
+              前年所得の無い新卒等は 0 を設定します。
+            </p>
 
             {/* 社会保険トグル */}
             <div className="space-y-3">
