@@ -5,7 +5,7 @@ import { DUMMY_EMPLOYEE_DATA, EmployeeRecord, EmployeeColor, DEFAULT_WORKPLACES,
 import { usePersistedState } from "@/lib/usePersistedState";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Users } from "lucide-react";
+import { Plus, Users, CheckCircle2 } from "lucide-react";
 import { EmployeeInfoTab } from "@/components/EmployeeInfoTab";
 import { PayrollTab } from "@/components/PayrollTab";
 import { PayrollFinalizationTab } from "@/components/PayrollFinalizationTab";
@@ -56,6 +56,7 @@ interface EmployeeSidebarProps {
   onSelect: (id: string) => void;
   onAddClick: () => void;
   onAfterSelect?: () => void;
+  lockedIds: Set<string>;
 }
 
 // 各タブ項目: hoverをローカルstateで追跡してinline styleに渡す
@@ -64,11 +65,13 @@ function EmployeeTabButton({
   isSelected,
   onSelect,
   onAfterSelect,
+  isLocked,
 }: {
   emp: EmployeeRecord;
   isSelected: boolean;
   onSelect: (id: string) => void;
   onAfterSelect?: () => void;
+  isLocked: boolean;
 }) {
   const [hovered, setHovered] = useState(false);
   const c = COLOR_MAP[emp.color];
@@ -110,10 +113,19 @@ function EmployeeTabButton({
 
       {/* テキスト */}
       <div className="flex-1 min-w-0">
-        <p className="truncate text-sm" style={{ color: isSelected ? c.text : undefined }}>
-          {emp.name}
+        <p className="truncate text-sm flex items-center gap-1.5" style={{ color: isSelected ? c.text : undefined }}>
+          <span className="truncate">{emp.name}</span>
+          {isLocked && (
+            <CheckCircle2
+              className="w-3.5 h-3.5 text-green-600 flex-shrink-0"
+              data-testid={`sidebar-locked-${emp.id}`}
+            />
+          )}
         </p>
-        <p className="text-xs text-muted-foreground truncate">{emp.department}</p>
+        <p className="text-xs text-muted-foreground truncate">
+          {emp.department}
+          {isLocked && <span className="ml-1.5 text-green-600 font-semibold">・確定</span>}
+        </p>
       </div>
     </button>
   );
@@ -125,6 +137,7 @@ function EmployeeSidebarContent({
   onSelect,
   onAddClick,
   onAfterSelect,
+  lockedIds,
 }: EmployeeSidebarProps) {
   return (
     <div className="flex flex-col h-full">
@@ -142,6 +155,7 @@ function EmployeeSidebarContent({
             isSelected={emp.id === selectedId}
             onSelect={onSelect}
             onAfterSelect={onAfterSelect}
+            isLocked={lockedIds.has(emp.id)}
           />
         ))}
 
@@ -345,11 +359,25 @@ export default function Dashboard() {
     setAddDialogOpen(false);
   };
 
+  const currentYyyymm = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, "0")}`;
+  const lockedIds = new Set(
+    payrollResultDB
+      .filter(
+        (p) =>
+          p != null &&
+          p.tenantId === DEFAULT_TENANT_ID &&
+          p.targetYearMonth === currentYyyymm &&
+          p.status === "locked",
+      )
+      .map((p) => p.employeeId),
+  );
+
   const sidebarProps: EmployeeSidebarProps = {
     employees,
     selectedId: selectedEmployeeId,
     onSelect: handleSelectEmployee,
     onAddClick: handleOpenAddDialog,
+    lockedIds,
   };
 
   return (

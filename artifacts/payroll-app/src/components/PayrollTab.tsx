@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, Fragment, useMemo } from "react";
+import { toast } from "sonner";
 import { calculateIncomeTax } from "@/lib/taxCalculator";
 import {
   getTimecardEntries,
@@ -222,14 +223,15 @@ let manualRowCounter = 0;
 
 type PayType = "monthly" | "hourly";
 
-function PayTypePills({ value, onChange }: { value: PayType; onChange: (v: PayType) => void }) {
+function PayTypePills({ value, onChange, disabled }: { value: PayType; onChange: (v: PayType) => void; disabled?: boolean }) {
   return (
-    <div className="inline-flex items-center bg-muted rounded-full p-1 gap-1">
+    <div className={cn("inline-flex items-center bg-muted rounded-full p-1 gap-1", disabled && "opacity-60")}>
       {(["monthly", "hourly"] as PayType[]).map((type) => (
-        <button key={type} onClick={() => onChange(type)}
+        <button key={type} onClick={() => onChange(type)} disabled={disabled}
           className={cn(
             "px-4 py-1.5 rounded-full text-sm font-semibold transition-all duration-200",
-            value === type ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+            value === type ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+            disabled && "cursor-not-allowed",
           )}
         >
           {type === "monthly" ? "月給制" : "時給制"}
@@ -1552,6 +1554,7 @@ export function PayrollTab({
     () => payrollResultDB.find(
       (p) =>
         p != null &&
+        p.tenantId === DEFAULT_TENANT_ID &&
         p.employeeId === employeeId &&
         p.targetYearMonth === yyyymm &&
         p.status === "locked",
@@ -1579,9 +1582,15 @@ export function PayrollTab({
       lockedAt: new Date().toISOString(),
     };
     onLockOne(result);
+    toast.success(`${monthLabel(currentDate)} の給与を確定しました`, {
+      description: `総支給 ${formatJPY(grossAmount)} / 差引支給額 ${formatJPY(Math.max(0, grossAmount - deductions.total))}`,
+    });
   };
 
-  const handleUnlock = () => onUnlockOne(employeeId, yyyymm);
+  const handleUnlock = () => {
+    onUnlockOne(employeeId, yyyymm);
+    toast.info(`${monthLabel(currentDate)} の確定を解除しました`);
+  };
 
   const tableHandlers: Omit<TimecardTableProps, "rows" | "currentDate" | "totalHours" | "monthlyBuckets"> = {
     workplaces,
@@ -1599,6 +1608,8 @@ export function PayrollTab({
 
   const dialogInitial = wpDialogMode === "edit" && wpDialogEditId ? workplaces[wpDialogEditId] ?? null : null;
 
+  const isLocked = !!lockedSnapshot;
+
   return (
     <div className="space-y-6 max-w-3xl">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1607,29 +1618,54 @@ export function PayrollTab({
             <Calculator className="w-4 h-4 text-primary" />
           </div>
           <div>
-            <p className="text-sm font-semibold text-foreground">所得税シミュレーター</p>
+            <div className="flex items-center gap-2">
+              <p className="text-sm font-semibold text-foreground">所得税シミュレーター</p>
+              {isLocked && (
+                <span
+                  data-testid="locked-badge"
+                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-green-100 text-green-700 border border-green-200"
+                >
+                  <CheckCircle2 className="w-3 h-3" />
+                  確定済み
+                </span>
+              )}
+            </div>
             <p className="text-xs text-muted-foreground">甲欄・扶養親族0人(令和6年分)</p>
           </div>
         </div>
-        <PayTypePills value={payType} onChange={setPayType} />
+        <PayTypePills value={payType} onChange={setPayType} disabled={isLocked} />
       </div>
 
-      <div className="bg-card border border-border rounded-2xl p-5 shadow-sm space-y-5">
-        {payType === "monthly" ? (
-          <MonthlyInput
-            value={monthlySalaryInput}
-            onChange={setMonthlySalaryInput}
-            previousGross={previousMonth.gross}
-          />
-        ) : (
-          <HourlySection
-            hourlyRate={hourlyRateInput} onHourlyRateChange={setHourlyRateInput}
-            rows={timecardRows} currentDate={currentDate}
-            ocrState={ocrState} onFileSelect={handleFileSelect}
-            totalHours={totalHours} monthlyBuckets={monthlyBuckets} {...tableHandlers}
-          />
+      <fieldset
+        disabled={isLocked}
+        data-testid="payroll-form-fieldset"
+        className={cn(
+          "border-0 p-0 m-0 min-w-0 space-y-5 transition-opacity",
+          isLocked && "opacity-60",
         )}
-      </div>
+      >
+        <div
+          className={cn(
+            "bg-card border border-border rounded-2xl p-5 shadow-sm space-y-5",
+            isLocked && "bg-muted/40",
+          )}
+        >
+          {payType === "monthly" ? (
+            <MonthlyInput
+              value={monthlySalaryInput}
+              onChange={setMonthlySalaryInput}
+              previousGross={previousMonth.gross}
+            />
+          ) : (
+            <HourlySection
+              hourlyRate={hourlyRateInput} onHourlyRateChange={setHourlyRateInput}
+              rows={timecardRows} currentDate={currentDate}
+              ocrState={ocrState} onFileSelect={handleFileSelect}
+              totalHours={totalHours} monthlyBuckets={monthlyBuckets} {...tableHandlers}
+            />
+          )}
+        </div>
+      </fieldset>
 
       <ResultCard
         grossAmount={grossAmount}
