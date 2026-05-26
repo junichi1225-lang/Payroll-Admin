@@ -38,7 +38,7 @@ import {
   Calculator, Clock, Info, TrendingUp, Upload, Loader2,
   CheckCircle2, AlertCircle, Plus, ScanLine, ChevronDown,
   CalendarDays, Moon, Sunrise, MapPin, PencilLine, Pencil,
-  Briefcase, Zap, CalendarOff, Share2,
+  Briefcase, Zap, CalendarOff, Share2, Download,
 } from "lucide-react";
 
 // ─────────────────────────────────────────────
@@ -949,6 +949,53 @@ interface ResultCardProps {
 
 const SHARE_DUMMY_URL = "https://app.payroll-saas.com/dummy-link";
 
+const PAYSLIP_PRINT_ID = "payslip-print-target";
+
+async function downloadPayslipPdf(employeeName: string, currentDate: Date) {
+  const target = typeof document !== "undefined" ? document.getElementById(PAYSLIP_PRINT_ID) : null;
+  if (!target) {
+    toast.error("給与明細の出力対象が見つかりません");
+    return;
+  }
+  const yyyymm = toYearMonth(currentDate.getFullYear(), currentDate.getMonth() + 1);
+  const safeName = (employeeName || "従業員").replace(/[\\/:*?"<>|\s]+/g, "");
+  const filename = `${safeName}_給与明細_${yyyymm}.pdf`;
+  try {
+    const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+      import("html2canvas-pro"),
+      import("jspdf"),
+    ]);
+    const canvas = await html2canvas(target, {
+      scale: 2,
+      useCORS: true,
+      backgroundColor: "#ffffff",
+      logging: false,
+    });
+    const imgData = canvas.toDataURL("image/jpeg", 0.95);
+    const pdf = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const margin = 10;
+    const usableWidth = pageWidth - margin * 2;
+    const imgHeight = (canvas.height * usableWidth) / canvas.width;
+    let heightLeft = imgHeight;
+    let position = margin;
+    pdf.addImage(imgData, "JPEG", margin, position, usableWidth, imgHeight);
+    heightLeft -= pageHeight - margin * 2;
+    while (heightLeft > 0) {
+      position = heightLeft - imgHeight + margin;
+      pdf.addPage();
+      pdf.addImage(imgData, "JPEG", margin, position, usableWidth, imgHeight);
+      heightLeft -= pageHeight - margin * 2;
+    }
+    pdf.save(filename);
+    toast.success(`${filename} をダウンロードしました`);
+  } catch (err) {
+    console.error("[downloadPayslipPdf]", err);
+    toast.error("PDF生成に失敗しました");
+  }
+}
+
 async function sharePayslip(employeeName: string, currentDate: Date) {
   const monthStr = monthLabel(currentDate);
   const payload = {
@@ -1001,6 +1048,8 @@ function ResultCard({
 
   return (
     <div className="space-y-4">
+      {/* PDF出力ターゲット — サマリー＋控除額カードを内包 */}
+      <div id={PAYSLIP_PRINT_ID} className="space-y-4 bg-background">
       {/* サマリー */}
       <div className="bg-card border border-border rounded-2xl p-5 shadow-sm space-y-4">
         <div className="flex items-center justify-between">
@@ -1111,12 +1160,14 @@ function ResultCard({
           </AccordionItem>
         </Accordion>
       </div>
+      </div>
+      {/* /PDF出力ターゲット */}
 
       {/* 確定ボタン */}
-      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3 flex-wrap">
         {isLocked ? (
           <>
-            <div className="flex-1 flex items-center justify-center gap-2 px-5 py-3.5 rounded-xl bg-green-50 border border-green-200 text-green-700">
+            <div className="flex-1 min-w-[180px] flex items-center justify-center gap-2 px-5 py-3.5 rounded-xl bg-green-50 border border-green-200 text-green-700">
               <CheckCircle2 className="w-4 h-4" />
               <span className="text-sm font-bold">{monthLabel(currentDate)} 確定済</span>
             </div>
@@ -1128,6 +1179,15 @@ function ResultCard({
             >
               <Share2 className="w-4 h-4" />
               給与明細を共有する
+            </button>
+            <button
+              type="button"
+              onClick={() => downloadPayslipPdf(employeeName, currentDate)}
+              data-testid="download-payslip-pdf"
+              className="inline-flex items-center justify-center gap-1.5 px-4 py-3.5 rounded-xl border border-primary/40 text-primary bg-primary/5 text-sm font-semibold hover:bg-primary/10 transition-colors"
+            >
+              <Download className="w-4 h-4" />
+              PDFをダウンロード
             </button>
             <button
               type="button"
