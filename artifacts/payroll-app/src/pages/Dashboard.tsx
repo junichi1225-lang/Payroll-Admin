@@ -491,6 +491,7 @@ export default function Dashboard() {
                           key={selectedEmployeeId}
                           currentDate={currentDate}
                           employeeId={selectedEmployeeId}
+                          employeeName={selectedEmployee.name}
                           workplaces={workplaces}
                           onAddWorkplace={handleAddWorkplace}
                           onUpdateWorkplace={handleUpdateWorkplace}

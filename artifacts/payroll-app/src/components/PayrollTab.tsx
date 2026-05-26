@@ -38,7 +38,7 @@ import {
   Calculator, Clock, Info, TrendingUp, Upload, Loader2,
   CheckCircle2, AlertCircle, Plus, ScanLine, ChevronDown,
   CalendarDays, Moon, Sunrise, MapPin, PencilLine, Pencil,
-  Briefcase, Zap, CalendarOff,
+  Briefcase, Zap, CalendarOff, Share2,
 } from "lucide-react";
 
 // ─────────────────────────────────────────────
@@ -939,11 +939,39 @@ interface ResultCardProps {
   payType: PayType;
   currentDate: Date;
   master: EmployeeMaster | undefined;
+  employeeName: string;
   previousMonth: { gross: number; incomeTax: number };
   isLocked: boolean;
   canLock: boolean;
   onLock: (deductions: DeductionBreakdown) => void;
   onUnlock: () => void;
+}
+
+const SHARE_DUMMY_URL = "https://app.payroll-saas.com/dummy-link";
+
+async function sharePayslip(employeeName: string, currentDate: Date) {
+  const monthStr = monthLabel(currentDate);
+  const payload = {
+    title: `${monthStr}分 給与明細`,
+    text: `${employeeName}さんの${monthStr}分の給与明細が確定しました。以下のリンクから確認してください。`,
+    url: SHARE_DUMMY_URL,
+  };
+  try {
+    if (typeof navigator !== "undefined" && typeof navigator.share === "function") {
+      await navigator.share(payload);
+      toast.success("共有メニューを開きました");
+      return;
+    }
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(payload.url);
+    }
+    if (typeof window !== "undefined") {
+      window.alert("共有メニューを開きました（ダミーURLをコピーしました）");
+    }
+  } catch (err) {
+    if ((err as Error)?.name === "AbortError") return;
+    toast.error("共有に失敗しました");
+  }
 }
 
 function DeductionRow({ label, amount, hint, faded }: { label: string; amount: number; hint?: string; faded?: boolean }) {
@@ -962,7 +990,7 @@ function DeductionRow({ label, amount, hint, faded }: { label: string; amount: n
 }
 
 function ResultCard({
-  grossAmount, payType, currentDate, master,
+  grossAmount, payType, currentDate, master, employeeName,
   previousMonth, isLocked, canLock, onLock, onUnlock,
 }: ResultCardProps) {
   const yyyymm = toYearMonth(currentDate.getFullYear(), currentDate.getMonth() + 1);
@@ -1085,13 +1113,22 @@ function ResultCard({
       </div>
 
       {/* 確定ボタン */}
-      <div className="flex items-center gap-3">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
         {isLocked ? (
           <>
             <div className="flex-1 flex items-center justify-center gap-2 px-5 py-3.5 rounded-xl bg-green-50 border border-green-200 text-green-700">
               <CheckCircle2 className="w-4 h-4" />
               <span className="text-sm font-bold">{monthLabel(currentDate)} 確定済</span>
             </div>
+            <button
+              type="button"
+              onClick={() => sharePayslip(employeeName, currentDate)}
+              data-testid="share-payslip"
+              className="inline-flex items-center justify-center gap-1.5 px-4 py-3.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 shadow-sm transition-colors"
+            >
+              <Share2 className="w-4 h-4" />
+              給与明細を共有する
+            </button>
             <button
               type="button"
               onClick={onUnlock}
@@ -1328,6 +1365,7 @@ function WorkplaceDialog({ open, onOpenChange, mode, initial, onSubmit }: Workpl
 interface PayrollTabProps {
   currentDate: Date;
   employeeId: string;
+  employeeName: string;
   workplaces: Record<string, WorkplaceDef>;
   onAddWorkplace: (key: string, def: WorkplaceDef) => void;
   onUpdateWorkplace: (id: string, def: WorkplaceDef) => void;
@@ -1338,7 +1376,7 @@ interface PayrollTabProps {
 }
 
 export function PayrollTab({
-  currentDate, employeeId, workplaces, onAddWorkplace, onUpdateWorkplace,
+  currentDate, employeeId, employeeName, workplaces, onAddWorkplace, onUpdateWorkplace,
   employeeDB, payrollResultDB, onLockOne, onUnlockOne,
 }: PayrollTabProps) {
   const [payType, setPayType] = useState<PayType>("monthly");
@@ -1672,6 +1710,7 @@ export function PayrollTab({
         payType={payType}
         currentDate={currentDate}
         master={master}
+        employeeName={employeeName}
         previousMonth={previousMonth}
         isLocked={!!lockedSnapshot}
         canLock={true}
