@@ -16,12 +16,10 @@ import {
   PayrollResult,
 } from "@/lib/dummy-data";
 import {
-  calculateHealthInsurance,
   isNursingCareInsuranceTarget,
-  HEALTH_INSURANCE_RATE,
-  NURSING_CARE_INSURANCE_RATE,
 } from "@/lib/insurance";
 import { buildPayrollResultId, toYearMonth } from "@/lib/payrollCalc";
+import { getInsuranceRateOrFallback } from "@/lib/constants/rates";
 import { useKeyedPersistedState } from "@/lib/usePersistedState";
 import {
   Accordion, AccordionItem, AccordionTrigger, AccordionContent,
@@ -899,25 +897,29 @@ function calcDeductions(
   grossAmount: number,
   master: EmployeeMaster | undefined,
   yyyymm: string,
+  prefecture: string,
 ): DeductionBreakdown {
+  // 都道府県×年月の料率マスタを参照（マスタに無ければ全国平均フォールバック）
+  const rates = getInsuranceRateOrFallback(prefecture, yyyymm);
+
   const enrolled = !!master?.isSocialInsurance && (master?.standardRemuneration ?? 0) > 0;
   const standardRem = enrolled ? master!.standardRemuneration : 0;
   const isNursingCareTarget = enrolled && !!master
     ? isNursingCareInsuranceTarget(master.birthDate, yyyymm)
     : false;
 
-  // 健康保険(基本部分) — 標準報酬月額 × 料率 × 折半
+  // 健康保険(基本部分) — 標準報酬月額 × 都道府県別料率 × 折半
   const health = enrolled
-    ? Math.floor(standardRem * HEALTH_INSURANCE_RATE / 2)
+    ? Math.floor(standardRem * rates.healthInsuranceRate / 2)
     : 0;
-  // 介護保険(40歳以上) — 上乗せ分
+  // 介護保険(40歳以上) — 上乗せ分（全国一律料率）
   const nursingCare = isNursingCareTarget
-    ? Math.floor(standardRem * NURSING_CARE_INSURANCE_RATE / 2)
+    ? Math.floor(standardRem * rates.nursingCareInsuranceRate / 2)
     : 0;
   // こども子育て支援金 — 標準報酬 × 0.36% × 折半 (令和8年度導入予定の試算)
   const childcare = enrolled ? Math.floor(standardRem * 0.0036 / 2) : 0;
-  // 厚生年金 — 18.3% 労使折半
-  const pension = enrolled ? Math.floor(standardRem * 0.183 / 2) : 0;
+  // 厚生年金 — 都道府県別料率(現状は全国一律18.30%) 労使折半
+  const pension = enrolled ? Math.floor(standardRem * rates.pensionInsuranceRate / 2) : 0;
   // 雇用保険（労働保険のうち従業員負担分） — 総支給 × 0.6%
   const labor = grossAmount > 0 ? Math.floor(grossAmount * 0.006) : 0;
   // 所得税 — 社保控除後の金額をベースに簡易計算
@@ -940,6 +942,8 @@ interface ResultCardProps {
   currentDate: Date;
   master: EmployeeMaster | undefined;
   employeeName: string;
+  /** 控除計算に使用する所属事業所の都道府県（料率マスタのキー） */
+  prefecture: string;
   previousMonth: { gross: number; incomeTax: number };
   isLocked: boolean;
   canLock: boolean;
@@ -1037,11 +1041,15 @@ function DeductionRow({ label, amount, hint, faded }: { label: string; amount: n
 }
 
 function ResultCard({
-  grossAmount, payType, currentDate, master, employeeName,
+  grossAmount, payType, currentDate, master, employeeName, prefecture,
   previousMonth, isLocked, canLock, onLock, onUnlock,
 }: ResultCardProps) {
   const yyyymm = toYearMonth(currentDate.getFullYear(), currentDate.getMonth() + 1);
-  const deductions = calcDeductions(grossAmount, master, yyyymm);
+  // 都道府県/年月/標報/総支給 のいずれかが変わると即時に再計算（リアクティブ更新）
+  const deductions = useMemo(
+    () => calcDeductions(grossAmount, master, yyyymm, prefecture),
+    [grossAmount, master, yyyymm, prefecture],
+  );
   const hasValue = grossAmount > 0;
   const currentNet = Math.max(0, grossAmount - deductions.total);
   const prevNet = Math.max(0, previousMonth.gross - previousMonth.incomeTax);
@@ -1662,6 +1670,28 @@ export function PayrollTab({
 
   const master = employeeDB[employeeId];
 
+  // 所属事業所の都道府県を導出（社会保険料率の都道府県別計算用）。
+  // タイムカードに打刻された職場のうち最も労働時間が多い職場を「主たる事業所」とし、
+  // 打刻が無い（月給制等）場合は既定職場 (DEFAULT_WP_KEY) → 任意の職場 の順でフォールバック。
+  // workplaces の prefecture 設定変更 / 月切替 / 打刻内容変更で即時に再評価される。
+  const primaryPrefecture = useMemo(() => {
+    const totals: Record<string, number> = {};
+    for (const row of timecardRows) {
+      const h = calcHours(row.stdStart, row.stdEnd) - (row.breakMinutes ?? 0) / 60;
+      if (h > 0) totals[row.workplaceId] = (totals[row.workplaceId] ?? 0) + h;
+    }
+    let topId: string | null = null;
+    let topHours = -1;
+    for (const [id, h] of Object.entries(totals)) {
+      if (h > topHours) { topHours = h; topId = id; }
+    }
+    const wp: WorkplaceDef | undefined =
+      (topId ? workplaces[topId] : undefined) ??
+      workplaces[DEFAULT_WP_KEY] ??
+      Object.values(workplaces)[0];
+    return wp?.prefecture ?? "東京都";
+  }, [timecardRows, workplaces]);
+
   const handleLock = (deductions: DeductionBreakdown) => {
     const result: PayrollResult = {
       tenantId: DEFAULT_TENANT_ID,
@@ -1771,6 +1801,7 @@ export function PayrollTab({
         currentDate={currentDate}
         master={master}
         employeeName={employeeName}
+        prefecture={primaryPrefecture}
         previousMonth={previousMonth}
         isLocked={!!lockedSnapshot}
         canLock={true}
