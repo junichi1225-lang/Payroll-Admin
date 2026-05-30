@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, Fragment, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import { calculateIncomeTax } from "@/lib/taxCalculator";
 import {
@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/accordion";
 import { Switch } from "@/components/ui/switch";
 import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectSeparator,
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogClose,
@@ -35,7 +35,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   Calculator, Clock, Info, TrendingUp, Upload, Loader2,
-  CheckCircle2, AlertCircle, Plus, ScanLine, ChevronDown,
+  CheckCircle2, AlertCircle, Plus, ScanLine,
   CalendarDays, Moon, Sunrise, MapPin, PencilLine, Pencil,
   Briefcase, Zap, CalendarOff, Share2, Download,
 } from "lucide-react";
@@ -77,7 +77,6 @@ const DOW_JP: Record<DayOfWeek, string> = {
   Thursday: "木", Friday: "金", Saturday: "土",
 };
 
-const ADD_WORKPLACE_VALUE = "__add_new_workplace__";
 const DEFAULT_WP_KEY = "w1";
 
 const ROUNDING_LABELS: Record<RoundingType, string> = {
