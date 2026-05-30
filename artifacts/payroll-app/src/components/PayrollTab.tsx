@@ -14,6 +14,7 @@ import {
   PREFECTURE_OPTIONS,
   EmployeeMaster,
   PayrollResult,
+  DEFAULT_HOURLY_RATES,
 } from "@/lib/dummy-data";
 import {
   isNursingCareInsuranceTarget,
@@ -156,6 +157,7 @@ function calcRowBuckets(
   effectiveStart: string, effectiveEnd: string,
   ocrStart: string, stdStart: string,
   breakMinutes: number, earlyOvertime: boolean, holiday: HolidayType,
+  applyLateNight: boolean = true,
 ): TimeBuckets {
   const grossMin = (calcHours(effectiveStart, effectiveEnd) * 60) | 0;
   if (grossMin <= 0) return EMPTY_BUCKETS;
@@ -177,7 +179,7 @@ function calcRowBuckets(
     buckets.basic = Math.min(8 * 60, remaining) / 60;
     buckets.overtime = Math.max(0, remaining - 8 * 60) / 60;
   }
-  buckets.lateNight = lateNightMin / 60;
+  buckets.lateNight = applyLateNight ? lateNightMin / 60 : 0;
   return buckets;
 }
 
@@ -190,27 +192,33 @@ type TimecardRow = TimecardEntry & {
   editEnd: string;
   workplaceId: string;
   breakMinutes: number;
-  earlyOvertime: boolean;
-  lateNightPremium: boolean;
-  note: string;
-  expanded: boolean;
   timeManuallyEdited: boolean;
-  holidayOverride: HolidayType | "auto";
+  /** えんぴつアイコンで打刻の手動上書き編集を開いている状態（永続化対象） */
+  manualEdit: boolean;
 };
 
-function entryToRow(entry: TimecardEntry, defaultBreak: number): TimecardRow {
+function entryToRow(entry: TimecardEntry, defaultBreak: number, workplaceId: string): TimecardRow {
   return {
     ...entry,
     editStart: "", editEnd: "",
-    workplaceId: DEFAULT_WP_KEY,
+    workplaceId,
     breakMinutes: defaultBreak,
-    earlyOvertime: false,
-    lateNightPremium: false,
-    note: "",
-    expanded: false,
     timeManuallyEdited: false,
-    holidayOverride: "auto",
+    manualEdit: false,
   };
+}
+
+/** シードのダミー打刻を職場ごとに分配（前半→第1職場 / 後半→第2職場）してタブ表示を成立させる */
+function seedRows(entries: TimecardEntry[], workplaces: Record<string, WorkplaceDef>): TimecardRow[] {
+  const ids = Object.keys(workplaces);
+  const primary = workplaces[DEFAULT_WP_KEY] ? DEFAULT_WP_KEY : ids[0];
+  const secondary = ids.find((id) => id !== primary) ?? primary;
+  const half = Math.ceil(entries.length / 2);
+  return entries.map((e, i) => {
+    const wpId = i < half ? primary : secondary;
+    const wp = workplaces[wpId];
+    return entryToRow(e, wp?.defaultRestMinutes ?? 60, wpId ?? DEFAULT_WP_KEY);
+  });
 }
 
 let manualRowCounter = 0;
@@ -375,37 +383,23 @@ function BucketSummary({ buckets }: { buckets: TimeBuckets }) {
 interface TimecardTableProps {
   rows: TimecardRow[];
   currentDate: Date;
-  totalHours: number;
-  monthlyBuckets: TimeBuckets;
-  workplaces: Record<string, WorkplaceDef>;
-  onWorkplaceChange: (id: string, wpId: string) => void;
-  onEditWorkplace: (wpId: string) => void;
+  /** このテーブルが属する職場（タブ）。休日判定・朝残業算入などの計算に使用 */
+  workplace: WorkplaceDef;
   onBreakMinutesChange: (id: string, mins: number) => void;
   onEditTime: (id: string, field: "editStart" | "editEnd", value: string) => void;
-  onToggleEarlyOvertime: (id: string, checked: boolean) => void;
-  onToggleLateNight: (id: string, checked: boolean) => void;
-  onNoteChange: (id: string, note: string) => void;
-  onHolidayOverrideChange: (id: string, value: HolidayType | "auto") => void;
-  onToggleExpanded: (id: string) => void;
+  onToggleManualEdit: (id: string) => void;
   onAddManualRow: () => void;
 }
 
 function TimecardTable({
-  rows, currentDate, totalHours, monthlyBuckets, workplaces,
-  onWorkplaceChange, onEditWorkplace, onBreakMinutesChange, onEditTime,
-  onToggleEarlyOvertime, onToggleLateNight, onNoteChange, onHolidayOverrideChange,
-  onToggleExpanded, onAddManualRow,
+  rows, currentDate, workplace,
+  onBreakMinutesChange, onEditTime, onToggleManualEdit, onAddManualRow,
 }: TimecardTableProps) {
   const errorCount = rows.filter(
     (r) => (r.ocrStatus === "error" || r.ocrStatus === "manual") && !(r.editStart && r.editEnd)
   ).length;
 
-  const COL_SPAN = 7;
-  const fallbackWp: WorkplaceDef = workplaces[DEFAULT_WP_KEY] ?? Object.values(workplaces)[0] ?? {
-    id: "fallback", name: "未設定", color: "text-muted-foreground bg-muted border-border",
-    defaultStartTime: "09:00", defaultEndTime: "18:00", defaultRestMinutes: 0,
-    roundingRule: "1min", legalHoliday: "Sunday", scheduledHoliday: [],
-  };
+  const wp = workplace;
 
   return (
     <div className="space-y-2">
@@ -423,21 +417,20 @@ function TimecardTable({
       {rows.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border py-10 text-center space-y-1.5">
           <CalendarDays className="w-8 h-8 text-muted-foreground/30 mx-auto" />
-          <p className="text-sm font-semibold text-muted-foreground/60">{monthLabel(currentDate)} のデータがありません</p>
+          <p className="text-sm font-semibold text-muted-foreground/60">{wp.name} の打刻データがありません</p>
           <p className="text-xs text-muted-foreground/40">OCRで読み込むか、手動で行を追加してください</p>
         </div>
       ) : (
         <div className="rounded-xl border border-border overflow-x-auto">
-          <table className="w-full text-sm min-w-[720px]">
+          <table className="w-full text-sm min-w-[560px]">
             <thead>
               <tr className="bg-muted/50 border-b border-border">
                 <th className="px-2 py-2.5 w-7"></th>
-                <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground w-[110px]">日付・属性</th>
-                <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground w-[150px]">職場</th>
-                <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground">OCR打刻</th>
-                <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground">計上時間</th>
+                <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground w-[110px]">日付</th>
+                <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground">出勤 – 退勤</th>
                 <th className="text-left px-2 py-2.5 text-xs font-semibold text-muted-foreground w-[82px]">休憩(分)</th>
-                <th className="px-2 py-2.5 w-[52px]"></th>
+                <th className="text-right px-2 py-2.5 text-xs font-semibold text-muted-foreground w-[72px]">実働</th>
+                <th className="px-2 py-2.5 w-[44px]"></th>
               </tr>
             </thead>
             <tbody>
@@ -447,369 +440,163 @@ function TimecardTable({
                 const needsInput = isError || isManual;
                 const hasEditedBoth = !!(row.editStart && row.editEnd);
                 const resolved = row.ocrStatus === "success" || (needsInput && hasEditedBoth);
+                // needsInput行は常に入力UI。success行はえんぴつ(手動上書き)を押した時だけ入力UI。
+                const editing = needsInput || row.manualEdit;
 
-                const effectiveStart = needsInput
+                const effectiveStart = editing
                   ? (row.editStart || "--:--")
-                  : row.earlyOvertime ? row.ocrStart : row.stdStart;
-                const effectiveEnd = needsInput ? (row.editEnd || "--:--") : row.stdEnd;
+                  : wp.includeEarlyOvertime ? row.ocrStart : row.stdStart;
+                const effectiveEnd = editing ? (row.editEnd || "--:--") : row.stdEnd;
 
-                const wp = workplaces[row.workplaceId] ?? fallbackWp;
                 const breakManuallyEdited = row.isRestManuallyEdited;
 
-                // 休日属性: override > auto detect
                 const rowDate = getRowDate(row.year, row.date);
-                const autoHoliday = detectHoliday(rowDate, wp);
-                const holiday = row.holidayOverride === "auto" ? autoHoliday : row.holidayOverride;
-                const holidayManual = row.holidayOverride !== "auto" && row.holidayOverride !== autoHoliday;
+                const holiday = detectHoliday(rowDate, wp);
 
                 const gross = calcHours(effectiveStart, effectiveEnd);
                 const net = gross > 0 ? Math.max(0, gross - row.breakMinutes / 60) : 0;
 
-                const rowBg = row.expanded ? "bg-primary/[.03]"
-                  : isError && !hasEditedBoth ? "bg-red-50/60"
+                const rowBg = isError && !hasEditedBoth ? "bg-red-50/60"
                   : isManual && !hasEditedBoth ? "bg-blue-50/40"
                   : holiday === "legal_holiday" ? "bg-rose-50/30 hover:bg-rose-50/50"
                   : holiday === "scheduled_holiday" ? "bg-orange-50/30 hover:bg-orange-50/50"
                   : "bg-background hover:bg-muted/20";
 
                 return (
-                  <Fragment key={row.id}>
-                    <tr className={cn("transition-colors", rowBg)}>
-                      <td className="px-2 py-2.5 text-center">
-                        {resolved
-                          ? <CheckCircle2 className="w-4 h-4 text-green-500 mx-auto" />
-                          : isError
-                          ? <AlertCircle className="w-4 h-4 text-red-500 mx-auto" />
-                          : <div className="w-4 h-4 rounded-full border-2 border-dashed border-muted-foreground/40 mx-auto" />
-                        }
-                      </td>
+                  <tr key={row.id} className={cn("transition-colors border-b border-border/40 last:border-b-0", rowBg)}>
+                    <td className="px-2 py-2.5 text-center">
+                      {resolved
+                        ? <CheckCircle2 className="w-4 h-4 text-green-500 mx-auto" />
+                        : isError
+                        ? <AlertCircle className="w-4 h-4 text-red-500 mx-auto" />
+                        : <div className="w-4 h-4 rounded-full border-2 border-dashed border-muted-foreground/40 mx-auto" />
+                      }
+                    </td>
 
-                      {/* 日付 + 休日属性バッジ */}
-                      <td className="px-2 py-2.5 align-top">
-                        <div className="flex flex-col gap-0.5">
-                          <span className="text-xs font-medium text-foreground whitespace-nowrap">
-                            {row.date}
-                            <span className="ml-1 text-[10px] text-muted-foreground">({DOW_JP[DOW_LIST[rowDate.getDay()]]})</span>
-                          </span>
+                    {/* 日付 + 休日バッジ */}
+                    <td className="px-2 py-2.5 align-top">
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-xs font-medium text-foreground whitespace-nowrap">
+                          {row.date}
+                          <span className="ml-1 text-[10px] text-muted-foreground">({DOW_JP[DOW_LIST[rowDate.getDay()]]})</span>
+                        </span>
+                        {holiday !== "weekday" && (
                           <span
                             className={cn(
                               "inline-flex items-center gap-0.5 self-start text-[9px] font-semibold border rounded px-1 py-0.5 leading-none",
                               HOLIDAY_BADGE_STYLE[holiday],
                             )}
-                            title={holidayManual ? "手動で上書き済み" : "曜日から自動判定"}
+                            title="職場マスタの休日設定から自動判定"
                           >
                             {HOLIDAY_LABELS[holiday]}
-                            {holidayManual && <PencilLine className="w-2 h-2" />}
                           </span>
-                        </div>
-                      </td>
-
-                      {/* 職場選択 + 編集 */}
-                      <td className="px-2 py-2.5">
-                        <div className="flex items-center gap-1">
-                          <Select
-                            value={row.workplaceId}
-                            onValueChange={(v) => onWorkplaceChange(row.id, v)}
-                          >
-                            <SelectTrigger className={cn(
-                              "h-7 text-xs px-2 w-[110px] border font-semibold rounded-lg",
-                              wp.color
-                            )}>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {Object.values(workplaces).map((def) => (
-                                <SelectItem key={def.id} value={def.id} className="text-xs">
-                                  <span className="font-semibold">{def.name}</span>
-                                  <span className="ml-2 text-muted-foreground">休憩{def.defaultRestMinutes}分</span>
-                                </SelectItem>
-                              ))}
-                              <SelectSeparator />
-                              <SelectItem
-                                value={ADD_WORKPLACE_VALUE}
-                                className="text-xs text-primary font-semibold focus:bg-primary/10"
-                              >
-                                <span className="inline-flex items-center gap-1">
-                                  <Plus className="w-3 h-3" />新しい職場を登録
-                                </span>
-                              </SelectItem>
-                            </SelectContent>
-                          </Select>
-                          <button
-                            onClick={() => onEditWorkplace(row.workplaceId)}
-                            aria-label={`${wp.name}を編集`}
-                            title={`${wp.name}のマスタ設定を編集`}
-                            className="w-6 h-6 inline-flex items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-                          >
-                            <Pencil className="w-3 h-3" />
-                          </button>
-                        </div>
-                      </td>
-
-                      {/* OCR打刻 */}
-                      <td className={cn(
-                        "px-2 py-2.5 transition-colors",
-                        row.timeManuallyEdited && "bg-yellow-50/80"
-                      )}>
-                        {needsInput ? (
-                          <div className="flex items-center gap-1">
-                            <input type="time" value={row.editStart}
-                              onChange={(e) => onEditTime(row.id, "editStart", e.target.value)}
-                              className={cn(
-                                "w-[86px] px-2 py-1.5 rounded-lg border text-xs font-medium",
-                                "focus:outline-none focus:ring-2 transition-all",
-                                !row.editStart && isError
-                                  ? "border-red-400 bg-background focus:ring-red-200 focus:border-red-500"
-                                  : row.editStart
-                                  ? "border-yellow-400 bg-yellow-50 focus:ring-yellow-200 focus:border-yellow-500"
-                                  : "border-border bg-background focus:ring-primary/20 focus:border-primary/50"
-                              )}
-                            />
-                            <span className="text-muted-foreground text-xs">–</span>
-                            <input type="time" value={row.editEnd}
-                              onChange={(e) => onEditTime(row.id, "editEnd", e.target.value)}
-                              className={cn(
-                                "w-[86px] px-2 py-1.5 rounded-lg border text-xs font-medium",
-                                "focus:outline-none focus:ring-2 transition-all",
-                                !row.editEnd && isError
-                                  ? "border-red-400 bg-background focus:ring-red-200 focus:border-red-500"
-                                  : row.editEnd
-                                  ? "border-yellow-400 bg-yellow-50 focus:ring-yellow-200 focus:border-yellow-500"
-                                  : "border-border bg-background focus:ring-primary/20 focus:border-primary/50"
-                              )}
-                            />
-                            {isError && !hasEditedBoth && (
-                              <span className="text-[10px] text-red-600 font-semibold bg-red-50 border border-red-200 rounded px-1 py-0.5 whitespace-nowrap">要修正</span>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-xs text-muted-foreground tabular-nums">
-                              {row.ocrStart} – {row.ocrEnd}
-                            </span>
-                            {row.timeManuallyEdited && (
-                              <span
-                                title="手修正されたデータ"
-                                className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-yellow-700 bg-yellow-100 border border-yellow-300 rounded px-1 py-0.5"
-                              >
-                                <PencilLine className="w-2.5 h-2.5" />手修正
-                              </span>
-                            )}
-                          </div>
                         )}
-                      </td>
+                      </div>
+                    </td>
 
-                      {/* 計上時間 */}
-                      <td className="px-2 py-2.5 tabular-nums">
-                        {effectiveStart === "--:--" || effectiveEnd === "--:--" ? (
-                          <span className="text-xs text-muted-foreground/50">--:-- – --:--</span>
-                        ) : (
-                          <div className="flex flex-col gap-0.5">
-                            <span className="text-xs font-bold text-foreground">
-                              {effectiveStart}
-                              <span className="font-normal text-muted-foreground"> – </span>
-                              {effectiveEnd}
-                            </span>
-                            {net > 0 && (
-                              <span className="text-[10px] text-muted-foreground">
-                                実働 {net.toFixed(1)}h
-                              </span>
-                            )}
-                          </div>
-                        )}
-                      </td>
-
-                      {/* 休憩 */}
-                      <td className="px-2 py-2.5">
+                    {/* 出勤–退勤（OCR読み取り / 手動上書き） */}
+                    <td className={cn(
+                      "px-2 py-2.5 transition-colors",
+                      row.timeManuallyEdited && "bg-yellow-50/80"
+                    )}>
+                      {editing ? (
                         <div className="flex items-center gap-1">
-                          <input
-                            type="number" min={0} max={240} step={15}
-                            value={row.breakMinutes}
-                            onChange={(e) => onBreakMinutesChange(row.id, parseInt(e.target.value, 10) || 0)}
+                          <input type="time" value={row.editStart}
+                            onChange={(e) => onEditTime(row.id, "editStart", e.target.value)}
+                            aria-label="出勤時刻"
                             className={cn(
-                              "w-[46px] px-1.5 py-1.5 rounded-lg border text-xs font-medium text-center",
+                              "w-[86px] px-2 py-1.5 rounded-lg border text-xs font-medium",
                               "focus:outline-none focus:ring-2 transition-all",
-                              breakManuallyEdited
-                                ? "border-yellow-400 bg-yellow-50 text-yellow-900 focus:ring-yellow-200 focus:border-yellow-500"
+                              !row.editStart && isError
+                                ? "border-red-400 bg-background focus:ring-red-200 focus:border-red-500"
+                                : row.editStart
+                                ? "border-yellow-400 bg-yellow-50 focus:ring-yellow-200 focus:border-yellow-500"
                                 : "border-border bg-background focus:ring-primary/20 focus:border-primary/50"
                             )}
-                            title={breakManuallyEdited ? `${wp.name}の既定値(${wp.defaultRestMinutes}分)から手修正` : undefined}
                           />
-                          <span className="text-xs text-muted-foreground">分</span>
+                          <span className="text-muted-foreground text-xs">–</span>
+                          <input type="time" value={row.editEnd}
+                            onChange={(e) => onEditTime(row.id, "editEnd", e.target.value)}
+                            aria-label="退勤時刻"
+                            className={cn(
+                              "w-[86px] px-2 py-1.5 rounded-lg border text-xs font-medium",
+                              "focus:outline-none focus:ring-2 transition-all",
+                              !row.editEnd && isError
+                                ? "border-red-400 bg-background focus:ring-red-200 focus:border-red-500"
+                                : row.editEnd
+                                ? "border-yellow-400 bg-yellow-50 focus:ring-yellow-200 focus:border-yellow-500"
+                                : "border-border bg-background focus:ring-primary/20 focus:border-primary/50"
+                            )}
+                          />
+                          {isError && !hasEditedBoth && (
+                            <span className="text-[10px] text-red-600 font-semibold bg-red-50 border border-red-200 rounded px-1 py-0.5 whitespace-nowrap">要修正</span>
+                          )}
                         </div>
-                      </td>
+                      ) : (
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs font-medium text-foreground tabular-nums">
+                            {effectiveStart} – {effectiveEnd}
+                          </span>
+                          {row.timeManuallyEdited && (
+                            <span
+                              title="手修正されたデータ"
+                              className="inline-flex items-center gap-0.5 text-[9px] font-semibold text-yellow-700 bg-yellow-100 border border-yellow-300 rounded px-1 py-0.5"
+                            >
+                              <PencilLine className="w-2.5 h-2.5" />手修正
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </td>
 
-                      {/* 詳細トグル */}
-                      <td className="px-1 py-2.5 text-right">
-                        <button
-                          onClick={() => onToggleExpanded(row.id)}
+                    {/* 休憩 */}
+                    <td className="px-2 py-2.5">
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="number" min={0} max={240} step={15}
+                          value={row.breakMinutes}
+                          onChange={(e) => onBreakMinutesChange(row.id, parseInt(e.target.value, 10) || 0)}
+                          aria-label="休憩時間(分)"
                           className={cn(
-                            "inline-flex items-center gap-0.5 px-2 py-1.5 rounded-lg text-xs font-medium transition-colors",
-                            row.expanded
+                            "w-[46px] px-1.5 py-1.5 rounded-lg border text-xs font-medium text-center",
+                            "focus:outline-none focus:ring-2 transition-all",
+                            breakManuallyEdited
+                              ? "border-yellow-400 bg-yellow-50 text-yellow-900 focus:ring-yellow-200 focus:border-yellow-500"
+                              : "border-border bg-background focus:ring-primary/20 focus:border-primary/50"
+                          )}
+                          title={breakManuallyEdited ? `${wp.name}の既定値(${wp.defaultRestMinutes}分)から手修正` : undefined}
+                        />
+                        <span className="text-xs text-muted-foreground">分</span>
+                      </div>
+                    </td>
+
+                    {/* 実働時間 */}
+                    <td className="px-2 py-2.5 text-right tabular-nums">
+                      {net > 0
+                        ? <span className="text-xs font-bold text-foreground">{net.toFixed(1)}h</span>
+                        : <span className="text-xs text-muted-foreground/40">—</span>
+                      }
+                    </td>
+
+                    {/* えんぴつ: 手動上書き */}
+                    <td className="px-1 py-2.5 text-right">
+                      {!needsInput && (
+                        <button
+                          onClick={() => onToggleManualEdit(row.id)}
+                          className={cn(
+                            "inline-flex items-center justify-center w-7 h-7 rounded-lg transition-colors",
+                            row.manualEdit
                               ? "bg-primary/10 text-primary"
                               : "text-muted-foreground hover:bg-muted hover:text-foreground"
                           )}
-                          aria-label={row.expanded ? "詳細を閉じる" : "詳細を表示"}
-                          aria-expanded={row.expanded}
+                          aria-label={row.manualEdit ? "手動上書きを閉じる" : "打刻を手動で上書き"}
+                          title={row.manualEdit ? "手動上書きを閉じる" : "打刻を手動で上書き"}
                         >
-                          <ChevronDown className={cn("w-4 h-4 transition-transform duration-200", row.expanded && "rotate-180")} />
+                          <Pencil className="w-3.5 h-3.5" />
                         </button>
-                      </td>
-                    </tr>
-
-                    {/* 詳細パネル */}
-                    <tr className={cn(rowBg)}>
-                      <td colSpan={COL_SPAN} className="p-0 border-0">
-                        <div
-                          aria-hidden={!row.expanded}
-                          className={cn(
-                            "grid transition-all duration-200 ease-in-out",
-                            row.expanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
-                          )}
-                        >
-                          <div className="overflow-hidden">
-                            <div className="px-4 py-3 border-t border-border/40 bg-muted/30 space-y-3">
-                              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-
-                                {/* 朝残業 */}
-                                <div className="flex items-start gap-3">
-                                  <div className="mt-0.5 w-8 h-8 rounded-lg bg-amber-50 border border-amber-200 flex items-center justify-center flex-shrink-0">
-                                    <Sunrise className="w-4 h-4 text-amber-600" />
-                                  </div>
-                                  <div className="flex items-center justify-between gap-2 flex-1 min-w-0">
-                                    <div>
-                                      <p className="text-xs font-semibold text-foreground">朝残業(早出)</p>
-                                      <p className="text-[10px] text-muted-foreground">始業前を朝残業に算入</p>
-                                    </div>
-                                    <Switch
-                                      checked={row.earlyOvertime}
-                                      onCheckedChange={(c) => onToggleEarlyOvertime(row.id, c)}
-                                      className="data-[state=checked]:bg-amber-500 flex-shrink-0"
-                                    />
-                                  </div>
-                                </div>
-
-                                {/* 深夜割増 */}
-                                <div className="flex items-start gap-3">
-                                  <div className="mt-0.5 w-8 h-8 rounded-lg bg-indigo-50 border border-indigo-200 flex items-center justify-center flex-shrink-0">
-                                    <Moon className="w-4 h-4 text-indigo-600" />
-                                  </div>
-                                  <div className="flex items-center justify-between gap-2 flex-1 min-w-0">
-                                    <div>
-                                      <p className="text-xs font-semibold text-foreground">深夜割増(22時以降)</p>
-                                      <p className="text-[10px] text-muted-foreground">25%割増を適用</p>
-                                    </div>
-                                    <Switch
-                                      checked={row.lateNightPremium}
-                                      onCheckedChange={(c) => onToggleLateNight(row.id, c)}
-                                      className="data-[state=checked]:bg-indigo-500 flex-shrink-0"
-                                    />
-                                  </div>
-                                </div>
-
-                                {/* 休日属性 上書き */}
-                                <div className="space-y-1.5">
-                                  <p className="text-xs font-semibold text-foreground">休日属性(強制上書き)</p>
-                                  <Select
-                                    value={row.holidayOverride}
-                                    onValueChange={(v) => onHolidayOverrideChange(row.id, v as HolidayType | "auto")}
-                                  >
-                                    <SelectTrigger className="h-8 text-xs">
-                                      <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      <SelectItem value="auto" className="text-xs">自動判定 ({HOLIDAY_LABELS[autoHoliday]})</SelectItem>
-                                      <SelectItem value="weekday" className="text-xs">平日</SelectItem>
-                                      <SelectItem value="legal_holiday" className="text-xs">法定休日</SelectItem>
-                                      <SelectItem value="scheduled_holiday" className="text-xs">所定休日</SelectItem>
-                                    </SelectContent>
-                                  </Select>
-                                </div>
-
-                                {/* 備考 */}
-                                <div className="space-y-1.5">
-                                  <p className="text-xs font-semibold text-foreground">備考</p>
-                                  <input
-                                    type="text"
-                                    value={row.note}
-                                    onChange={(e) => onNoteChange(row.id, e.target.value)}
-                                    placeholder="特記事項を入力..."
-                                    className="w-full px-3 py-2 rounded-lg border border-border bg-background text-xs text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary/50 transition-all"
-                                  />
-                                </div>
-
-                              </div>
-
-                              {/* 行ごとの5区分内訳 */}
-                              {(() => {
-                                const b = calcRowBuckets(
-                                  effectiveStart, effectiveEnd, row.ocrStart, row.stdStart,
-                                  row.breakMinutes, row.earlyOvertime, holiday,
-                                );
-                                const items: { label: string; value: number }[] = [
-                                  { label: "基本", value: b.basic },
-                                  { label: "時間外", value: b.overtime },
-                                  { label: "朝残業", value: b.earlyOvertime },
-                                  { label: "深夜", value: b.lateNight },
-                                  { label: "法定休日", value: b.legalHolidayWork },
-                                  { label: "所定休日", value: b.scheduledHolidayWork },
-                                ];
-                                return (
-                                  <div className="flex flex-wrap gap-1.5 pt-2 border-t border-border/40">
-                                    <span className="text-[10px] font-semibold text-muted-foreground self-center mr-1">本日内訳:</span>
-                                    {items.map((it) => (
-                                      <span
-                                        key={it.label}
-                                        className={cn(
-                                          "text-[10px] font-medium border rounded px-1.5 py-0.5 tabular-nums",
-                                          it.value > 0
-                                            ? "text-foreground bg-background border-border"
-                                            : "text-muted-foreground/50 bg-muted/30 border-border/40"
-                                        )}
-                                      >
-                                        {it.label} {it.value.toFixed(1)}h
-                                      </span>
-                                    ))}
-                                  </div>
-                                );
-                              })()}
-
-                              {/* 手修正・適用中インジケーター */}
-                              {(row.earlyOvertime || row.lateNightPremium || breakManuallyEdited || row.timeManuallyEdited || holidayManual) && (
-                                <div className="flex flex-wrap gap-2">
-                                  {row.earlyOvertime && (
-                                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">
-                                      <Sunrise className="w-3 h-3" />朝残業 適用中
-                                    </span>
-                                  )}
-                                  {row.lateNightPremium && (
-                                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-full px-2 py-0.5">
-                                      <Moon className="w-3 h-3" />深夜割増 適用中
-                                    </span>
-                                  )}
-                                  {breakManuallyEdited && (
-                                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-yellow-700 bg-yellow-50 border border-yellow-300 rounded-full px-2 py-0.5">
-                                      <PencilLine className="w-3 h-3" />休憩時間 手修正(既定 {wp.defaultRestMinutes}分)
-                                    </span>
-                                  )}
-                                  {row.timeManuallyEdited && (
-                                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-yellow-700 bg-yellow-50 border border-yellow-300 rounded-full px-2 py-0.5">
-                                      <PencilLine className="w-3 h-3" />打刻 手修正
-                                    </span>
-                                  )}
-                                  {holidayManual && (
-                                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-yellow-700 bg-yellow-50 border border-yellow-300 rounded-full px-2 py-0.5">
-                                      <PencilLine className="w-3 h-3" />休日属性 手動上書き
-                                    </span>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      </td>
-                    </tr>
-                  </Fragment>
+                      )}
+                    </td>
+                  </tr>
                 );
               })}
             </tbody>
@@ -820,20 +607,8 @@ function TimecardTable({
       <button onClick={onAddManualRow}
         className="w-full flex items-center justify-center gap-2 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted/40 rounded-lg border border-dashed border-border transition-colors"
       >
-        <Plus className="w-3.5 h-3.5" />打刻行を手動で追加
+        <Plus className="w-3.5 h-3.5" />{wp.name} に打刻行を手動で追加
       </button>
-
-      {/* 5区分サマリー */}
-      <div className="pt-2">
-        <BucketSummary buckets={monthlyBuckets} />
-      </div>
-
-      <div className="flex items-center justify-between px-3 py-2.5 bg-muted/40 rounded-xl border border-border/60">
-        <span className="text-xs font-semibold text-muted-foreground">
-          {monthLabel(currentDate)} 正味労働時間(休憩差引後)
-        </span>
-        <span className="text-sm font-bold text-foreground tabular-nums">{totalHours.toFixed(1)} 時間</span>
-      </div>
     </div>
   );
 }
@@ -842,34 +617,194 @@ function TimecardTable({
 // 時給セクション
 // ─────────────────────────────────────────────
 
-function HourlySection(props: {
-  hourlyRate: string; onHourlyRateChange: (v: string) => void;
-  rows: TimecardRow[]; currentDate: Date; ocrState: OcrState;
-  onFileSelect: (f: File) => void; totalHours: number; monthlyBuckets: TimeBuckets;
-} & Omit<TimecardTableProps, "rows" | "currentDate" | "totalHours" | "monthlyBuckets">) {
-  const { hourlyRate, onHourlyRateChange, rows, currentDate, ocrState, onFileSelect, totalHours, monthlyBuckets, ...tableProps } = props;
-  const hasRate = hourlyRate.replace(/[^0-9]/g, "").length > 0;
+/** 5区分バケットから正味労働時間（休憩差引後の実働合計）を算出 */
+function bucketNetHours(b: TimeBuckets): number {
+  return b.basic + b.overtime + b.earlyOvertime + b.legalHolidayWork + b.scheduledHolidayWork;
+}
+
+interface HourlySectionProps {
+  workplaces: Record<string, WorkplaceDef>;
+  rows: TimecardRow[];
+  currentDate: Date;
+  ocrState: OcrState;
+  onFileSelect: (f: File) => void;
+  /** 職場ID → 当月の集計バケット */
+  bucketsByWorkplace: Record<string, TimeBuckets>;
+  /** 職場ID → 入力中の時給（カンマ区切り文字列） */
+  rates: Record<string, string>;
+  /** 前月確定時の職場別時給（"前月と同様"用） */
+  prevRates: Record<string, string>;
+  activeWpId: string;
+  onActiveWpChange: (id: string) => void;
+  onRateChange: (wpId: string, value: string) => void;
+  onCopyPrevRate: (wpId: string) => void;
+  onAddWorkplace: () => void;
+  onEditWorkplace: (wpId: string) => void;
+  onBreakMinutesChange: (id: string, mins: number) => void;
+  onEditTime: (id: string, field: "editStart" | "editEnd", value: string) => void;
+  onToggleManualEdit: (id: string) => void;
+  onAddManualRow: (wpId: string) => void;
+}
+
+function HourlySection({
+  workplaces, rows, currentDate, ocrState, onFileSelect,
+  bucketsByWorkplace, rates, prevRates, activeWpId, onActiveWpChange,
+  onRateChange, onCopyPrevRate, onAddWorkplace, onEditWorkplace,
+  onBreakMinutesChange, onEditTime, onToggleManualEdit, onAddManualRow,
+}: HourlySectionProps) {
+  const wpList = Object.values(workplaces);
+  const activeWp = workplaces[activeWpId] ?? wpList[0];
+  const activeRows = rows.filter((r) => r.workplaceId === activeWp?.id);
+  const activeBuckets = bucketsByWorkplace[activeWp?.id ?? ""] ?? EMPTY_BUCKETS;
+  const activeHours = bucketNetHours(activeBuckets);
+  const rateStr = rates[activeWp?.id ?? ""] ?? "";
+  const rateNum = parseInt(rateStr.replace(/[^0-9]/g, ""), 10) || 0;
+  const hasRate = rateNum > 0;
+  const subtotal = Math.round(rateNum * activeHours);
+  const prevRateStr = prevRates[activeWp?.id ?? ""] ?? "";
+  const canCopyPrev = prevRateStr.replace(/[^0-9]/g, "").length > 0;
+
   return (
     <div className="space-y-5">
-      <div className="space-y-1.5">
-        <label className="block text-sm font-semibold text-foreground">基本時給(円)</label>
-        <p className="text-xs text-muted-foreground">社会保険料控除前の基本時給を入力してください</p>
-        <div className="relative mt-1 max-w-[200px]">
-          <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-semibold select-none">¥</span>
-          <input
-            type="text" inputMode="numeric" value={hourlyRate} placeholder="1,200"
-            onChange={(e) => { const d = e.target.value.replace(/[^0-9]/g, ""); onHourlyRateChange(toDisplayValue(d)); }}
-            className={cn(
-              "w-full pl-8 pr-4 py-3.5 rounded-xl border bg-background text-foreground text-base font-medium",
-              "focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all",
-              "placeholder:text-muted-foreground/40",
-              hasRate ? "border-primary/30" : "border-border"
-            )}
-          />
-        </div>
-      </div>
       <OcrUploadBanner ocrState={ocrState} onFileSelect={onFileSelect} />
-      <TimecardTable rows={rows} currentDate={currentDate} totalHours={totalHours} monthlyBuckets={monthlyBuckets} {...tableProps} />
+
+      {/* 事業所タブ */}
+      <div className="flex items-center gap-1.5 flex-wrap border-b border-border pb-px -mb-px">
+        {wpList.map((wp) => {
+          const active = wp.id === activeWp?.id;
+          return (
+            <button
+              key={wp.id}
+              type="button"
+              onClick={() => onActiveWpChange(wp.id)}
+              data-testid={`wp-tab-${wp.id}`}
+              className={cn(
+                "px-3.5 py-2 rounded-t-lg text-sm font-semibold border border-b-0 -mb-px transition-colors",
+                active
+                  ? "bg-card border-border text-foreground"
+                  : "bg-muted/40 border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/70",
+              )}
+            >
+              {wp.name}
+            </button>
+          );
+        })}
+        <button
+          type="button"
+          onClick={onAddWorkplace}
+          data-testid="wp-tab-add"
+          className="px-3 py-2 rounded-t-lg text-sm font-semibold text-primary hover:bg-primary/10 transition-colors inline-flex items-center gap-1"
+        >
+          <Plus className="w-3.5 h-3.5" />事業所を追加
+        </button>
+      </div>
+
+      {/* アクティブ職場の内容 */}
+      {activeWp && (
+        <div className="space-y-5">
+          <div className="flex items-center justify-between gap-2">
+            <span className={cn(
+              "inline-flex items-center gap-1.5 text-xs font-bold border rounded-full px-2.5 py-1",
+              activeWp.color,
+            )}>
+              <MapPin className="w-3 h-3" />{activeWp.name}
+            </span>
+            <button
+              type="button"
+              onClick={() => onEditWorkplace(activeWp.id)}
+              className="inline-flex items-center gap-1 text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors"
+              title={`${activeWp.name}のマスタ設定（所定労働時間・休憩・休日・割増ルール）を編集`}
+            >
+              <Pencil className="w-3 h-3" />職場マスタを編集
+            </button>
+          </div>
+
+          {/* 時給入力 + 前月と同様 */}
+          <div className="space-y-1.5">
+            <label className="block text-sm font-semibold text-foreground">{activeWp.name} の基本時給(円)</label>
+            <p className="text-xs text-muted-foreground">社会保険料控除前の基本時給を入力してください</p>
+            <div className="relative mt-1 flex items-stretch gap-2 max-w-[360px]">
+              <div className="relative flex-1">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-semibold select-none">¥</span>
+                <input
+                  type="text" inputMode="numeric" value={rateStr} placeholder="1,200"
+                  data-testid={`hourly-rate-${activeWp.id}`}
+                  onChange={(e) => { const d = e.target.value.replace(/[^0-9]/g, ""); onRateChange(activeWp.id, toDisplayValue(d)); }}
+                  className={cn(
+                    "w-full pl-8 pr-4 py-3.5 rounded-xl border bg-background text-foreground text-base font-medium",
+                    "focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all",
+                    "placeholder:text-muted-foreground/40",
+                    hasRate ? "border-primary/30" : "border-border"
+                  )}
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => canCopyPrev && onCopyPrevRate(activeWp.id)}
+                disabled={!canCopyPrev}
+                data-testid={`copy-prev-rate-${activeWp.id}`}
+                className={cn(
+                  "flex-shrink-0 px-3 py-2 rounded-xl border text-xs font-semibold transition-colors whitespace-nowrap",
+                  canCopyPrev
+                    ? "border-primary/30 text-primary bg-primary/5 hover:bg-primary/10"
+                    : "border-border text-muted-foreground/50 bg-muted/30 cursor-not-allowed",
+                )}
+                title={canCopyPrev ? `前月の時給 ¥${prevRateStr} を入力` : "前月のデータがありません"}
+              >
+                前月と同様
+              </button>
+            </div>
+          </div>
+
+          <TimecardTable
+            rows={activeRows}
+            currentDate={currentDate}
+            workplace={activeWp}
+            onBreakMinutesChange={onBreakMinutesChange}
+            onEditTime={onEditTime}
+            onToggleManualEdit={onToggleManualEdit}
+            onAddManualRow={() => onAddManualRow(activeWp.id)}
+          />
+
+          <BucketSummary buckets={activeBuckets} />
+
+          {/* この職場の小計 */}
+          <div className="flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-primary/5 border border-primary/20">
+            <div className="text-xs text-muted-foreground">
+              <span className="font-semibold text-foreground">{activeWp.name} 小計</span>
+              <span className="ml-2 tabular-nums">¥{rateStr || "—"} × {activeHours.toFixed(1)}h</span>
+            </div>
+            <span className="text-lg font-bold tabular-nums text-primary" data-testid={`wp-subtotal-${activeWp.id}`}>
+              {hasRate ? formatJPY(subtotal) : "¥ —"}
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// 手当セクション（プレースホルダー: 実計算は今後実装）
+// ─────────────────────────────────────────────
+
+function AllowancesSection() {
+  return (
+    <div className="rounded-2xl border border-border bg-card p-5 space-y-3">
+      <div className="flex items-center gap-2">
+        <Plus className="w-4 h-4 text-muted-foreground" />
+        <h3 className="text-sm font-bold text-foreground">手当</h3>
+        <span className="ml-auto text-[10px] font-semibold text-muted-foreground bg-muted border border-border rounded-full px-2 py-0.5">
+          準備中
+        </span>
+      </div>
+      <p className="text-xs text-muted-foreground leading-relaxed">
+        通勤手当・役職手当・資格手当などの支給項目をここで設定できるようになります。
+        現在は基本給（時給 × 実働時間）のみが総支給額に反映されます。
+      </p>
+      <div className="rounded-xl border border-dashed border-border py-6 text-center">
+        <p className="text-xs text-muted-foreground/60">支給項目はまだ登録されていません</p>
+      </div>
     </div>
   );
 }
@@ -1248,6 +1183,8 @@ function WorkplaceDialog({ open, onOpenChange, mode, initial, onSubmit }: Workpl
   const [legal, setLegal] = useState<DayOfWeek>("Sunday");
   const [scheduled, setScheduled] = useState<DayOfWeek[]>(["Saturday"]);
   const [prefecture, setPrefecture] = useState<string>(PREFECTURE_OPTIONS[0]);
+  const [includeEarlyOvertime, setIncludeEarlyOvertime] = useState(false);
+  const [applyLateNightPremium, setApplyLateNightPremium] = useState(true);
 
   useEffect(() => {
     if (!open) return;
@@ -1260,6 +1197,8 @@ function WorkplaceDialog({ open, onOpenChange, mode, initial, onSubmit }: Workpl
       setLegal(initial.legalHoliday);
       setScheduled(initial.scheduledHoliday);
       setPrefecture(initial.prefecture ?? PREFECTURE_OPTIONS[0]);
+      setIncludeEarlyOvertime(initial.includeEarlyOvertime ?? false);
+      setApplyLateNightPremium(initial.applyLateNightPremium ?? true);
     } else {
       setName("");
       setStart("09:00");
@@ -1269,6 +1208,8 @@ function WorkplaceDialog({ open, onOpenChange, mode, initial, onSubmit }: Workpl
       setLegal("Sunday");
       setScheduled(["Saturday"]);
       setPrefecture(PREFECTURE_OPTIONS[0]);
+      setIncludeEarlyOvertime(false);
+      setApplyLateNightPremium(true);
     }
   }, [open, mode, initial]);
 
@@ -1291,6 +1232,8 @@ function WorkplaceDialog({ open, onOpenChange, mode, initial, onSubmit }: Workpl
       roundingRule: rounding,
       legalHoliday: legal,
       scheduledHoliday: scheduled,
+      includeEarlyOvertime,
+      applyLateNightPremium,
       color: initial?.color,
     });
   };
@@ -1405,6 +1348,47 @@ function WorkplaceDialog({ open, onOpenChange, mode, initial, onSubmit }: Workpl
               })}
             </div>
           </div>
+
+          {/* 割増ルール（行ごとの設定から職場マスタへ移動） */}
+          <div className="space-y-2.5 pt-1 border-t border-border/60">
+            <p className="text-sm font-medium text-foreground pt-2">割増・残業ルール</p>
+
+            <div className="flex items-start gap-3 rounded-xl border border-border p-3">
+              <div className="mt-0.5 w-8 h-8 rounded-lg bg-amber-50 border border-amber-200 flex items-center justify-center flex-shrink-0">
+                <Sunrise className="w-4 h-4 text-amber-600" />
+              </div>
+              <div className="flex items-center justify-between gap-2 flex-1 min-w-0">
+                <div>
+                  <p className="text-xs font-semibold text-foreground">朝残業(早出)を算入</p>
+                  <p className="text-[10px] text-muted-foreground">始業前の打刻を朝残業として計上</p>
+                </div>
+                <Switch
+                  checked={includeEarlyOvertime}
+                  onCheckedChange={setIncludeEarlyOvertime}
+                  aria-label="朝残業を算入"
+                  className="data-[state=checked]:bg-amber-500 flex-shrink-0"
+                />
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3 rounded-xl border border-border p-3">
+              <div className="mt-0.5 w-8 h-8 rounded-lg bg-indigo-50 border border-indigo-200 flex items-center justify-center flex-shrink-0">
+                <Moon className="w-4 h-4 text-indigo-600" />
+              </div>
+              <div className="flex items-center justify-between gap-2 flex-1 min-w-0">
+                <div>
+                  <p className="text-xs font-semibold text-foreground">深夜割増(22時以降)を適用</p>
+                  <p className="text-[10px] text-muted-foreground">22時以降の労働に25%割増</p>
+                </div>
+                <Switch
+                  checked={applyLateNightPremium}
+                  onCheckedChange={setApplyLateNightPremium}
+                  aria-label="深夜割増を適用"
+                  className="data-[state=checked]:bg-indigo-500 flex-shrink-0"
+                />
+              </div>
+            </div>
+          </div>
         </div>
 
         <DialogFooter className="gap-2 mt-2">
@@ -1449,7 +1433,6 @@ export function PayrollTab({
 }: PayrollTabProps) {
   const [payType, setPayType] = useState<PayType>("monthly");
   const [monthlySalaryInput, setMonthlySalaryInput] = useState("");
-  const [hourlyRateInput, setHourlyRateInput] = useState("");
   const [ocrState, setOcrState] = useState<OcrState>("idle");
 
   // タイムカード State（localStorage 同期 — モックアップデモ用）
@@ -1460,10 +1443,34 @@ export function PayrollTab({
     storageKey,
     () => {
       const entries = getTimecardEntries(employeeId, year, month);
-      const defaultBreak = workplaces[DEFAULT_WP_KEY]?.defaultRestMinutes ?? 60;
-      return entries.map((e) => entryToRow(e, defaultBreak));
+      return seedRows(entries, workplaces);
     },
   );
+
+  // 職場別の基本時給 State（localStorage 同期）。初期値は DEFAULT_HOURLY_RATES。
+  const ratesKey = `hourlyRates_${DEFAULT_TENANT_ID}_${employeeId}_${year}_${month}`;
+  const [workplaceRates, setWorkplaceRates] = useKeyedPersistedState<Record<string, string>>(
+    ratesKey,
+    () => {
+      const init: Record<string, string> = {};
+      for (const id of Object.keys(workplaces)) {
+        const def = DEFAULT_HOURLY_RATES[id];
+        init[id] = def ? toDisplayValue(String(def)) : "";
+      }
+      return init;
+    },
+  );
+
+  // アクティブな事業所タブ
+  const [activeWpId, setActiveWpId] = useState<string>(
+    () => (workplaces[DEFAULT_WP_KEY] ? DEFAULT_WP_KEY : Object.keys(workplaces)[0] ?? DEFAULT_WP_KEY),
+  );
+  // 職場が削除/変更されてアクティブタブが無効化されたら先頭にフォールバック
+  useEffect(() => {
+    if (!workplaces[activeWpId]) {
+      setActiveWpId(workplaces[DEFAULT_WP_KEY] ? DEFAULT_WP_KEY : Object.keys(workplaces)[0] ?? DEFAULT_WP_KEY);
+    }
+  }, [workplaces, activeWpId]);
 
   // Dialog state
   const [wpDialogOpen, setWpDialogOpen] = useState(false);
@@ -1482,27 +1489,28 @@ export function PayrollTab({
       const year = currentDate.getFullYear();
       const month = currentDate.getMonth() + 1;
       const entries = getTimecardEntries(employeeId, year, month);
-      const defaultBreak = workplaces[DEFAULT_WP_KEY]?.defaultRestMinutes ?? 60;
-      setTimecardRows(entries.map((e) => entryToRow(e, defaultBreak)));
+      setTimecardRows(seedRows(entries, workplaces));
       setOcrState("done");
     }, 2500);
   };
 
-  const handleWorkplaceChange = (id: string, value: string) => {
-    if (value === ADD_WORKPLACE_VALUE) {
-      setWpDialogMode("create");
-      setWpDialogRowId(id);
-      setWpDialogEditId(null);
-      setWpDialogOpen(true);
-      return;
-    }
-    const def = workplaces[value];
-    if (!def) return;
-    setTimecardRows((prev) => prev.map((r) =>
-      r.id === id
-        ? { ...r, workplaceId: value, breakMinutes: def.defaultRestMinutes, isRestManuallyEdited: false }
-        : r
-    ));
+  // 事業所タブの「＋事業所を追加」: 新規作成ダイアログを開く
+  const handleAddWorkplaceTab = () => {
+    setWpDialogMode("create");
+    setWpDialogRowId(null);
+    setWpDialogEditId(null);
+    setWpDialogOpen(true);
+  };
+
+  const handleRateChange = (wpId: string, value: string) => {
+    setWorkplaceRates((prev) => ({ ...prev, [wpId]: value }));
+  };
+
+  const handleCopyPrevRate = (wpId: string) => {
+    const prev = prevRates[wpId];
+    if (!prev) return;
+    setWorkplaceRates((cur) => ({ ...cur, [wpId]: prev }));
+    toast.success("前月の時給を反映しました", { description: `¥${prev}` });
   };
 
   const handleEditWorkplace = (wpId: string) => {
@@ -1531,6 +1539,8 @@ export function PayrollTab({
         color: NEW_WORKPLACE_COLORS[colorIdx],
       };
       onAddWorkplace(newKey, newDef);
+      setWorkplaceRates((prev) => ({ ...prev, [newKey]: prev[newKey] ?? "" }));
+      setActiveWpId(newKey);
       if (wpDialogRowId) {
         setTimecardRows((prev) => prev.map((r) =>
           r.id === wpDialogRowId
@@ -1569,21 +1579,27 @@ export function PayrollTab({
     }));
   };
 
-  const handleToggleEarlyOvertime = (id: string, checked: boolean) =>
-    setTimecardRows((prev) => prev.map((r) => r.id === id ? { ...r, earlyOvertime: checked } : r));
-  const handleToggleLateNight = (id: string, checked: boolean) =>
-    setTimecardRows((prev) => prev.map((r) => r.id === id ? { ...r, lateNightPremium: checked } : r));
-  const handleNoteChange = (id: string, note: string) =>
-    setTimecardRows((prev) => prev.map((r) => r.id === id ? { ...r, note } : r));
-  const handleHolidayOverrideChange = (id: string, value: HolidayType | "auto") =>
-    setTimecardRows((prev) => prev.map((r) => r.id === id ? { ...r, holidayOverride: value } : r));
-  const handleToggleExpanded = (id: string) =>
-    setTimecardRows((prev) => prev.map((r) => r.id === id ? { ...r, expanded: !r.expanded } : r));
+  // えんぴつ: success 行の手動上書き入力を開閉。開く時、現在の計上時刻を editStart/End に流し込む。
+  const handleToggleManualEdit = (id: string) =>
+    setTimecardRows((prev) => prev.map((r) => {
+      if (r.id !== id) return r;
+      if (r.manualEdit) return { ...r, manualEdit: false };
+      const wp = workplaces[r.workplaceId];
+      const start = r.editStart || (wp?.includeEarlyOvertime ? r.ocrStart : r.stdStart) || "";
+      const end = r.editEnd || r.stdEnd || "";
+      const valid = (t: string) => /^\d{2}:\d{2}$/.test(t);
+      return {
+        ...r,
+        manualEdit: true,
+        editStart: valid(start) ? start : r.editStart,
+        editEnd: valid(end) ? end : r.editEnd,
+      };
+    }));
 
-  const handleAddManualRow = () => {
+  const handleAddManualRow = (workplaceId: string) => {
     const d = currentDate;
     manualRowCounter += 1;
-    const defaultBreak = workplaces[DEFAULT_WP_KEY]?.defaultRestMinutes ?? 60;
+    const wp = workplaces[workplaceId] ?? workplaces[DEFAULT_WP_KEY];
     setTimecardRows((prev) => [
       ...prev,
       {
@@ -1594,50 +1610,97 @@ export function PayrollTab({
         ocrStatus: "manual",
         ocrStart: "", ocrEnd: "", editStart: "", editEnd: "",
         stdStart: "--:--", stdEnd: "--:--",
-        workplaceId: DEFAULT_WP_KEY, breakMinutes: defaultBreak,
-        earlyOvertime: false, lateNightPremium: false, note: "", expanded: false,
-        timeManuallyEdited: false, holidayOverride: "auto",
+        workplaceId: workplaces[workplaceId] ? workplaceId : DEFAULT_WP_KEY,
+        breakMinutes: wp?.defaultRestMinutes ?? 60,
+        timeManuallyEdited: false,
+        manualEdit: false,
         isRestManuallyEdited: false,
       },
     ]);
   };
 
-  // 月間 5区分集計 (workplaces / timecardRows 変更で再計算)
-  const monthlyBuckets = useMemo<TimeBuckets>(() => {
-    return timecardRows.reduce<TimeBuckets>((acc, row) => {
+  // 職場別 5区分集計 (workplaces / timecardRows 変更で再計算)
+  const bucketsByWorkplace = useMemo<Record<string, TimeBuckets>>(() => {
+    const map: Record<string, TimeBuckets> = {};
+    for (const id of Object.keys(workplaces)) map[id] = { ...EMPTY_BUCKETS };
+    for (const row of timecardRows) {
       const wp = workplaces[row.workplaceId];
-      if (!wp) return acc;
+      if (!wp) continue;
       const needsInput = row.ocrStatus === "error" || row.ocrStatus === "manual";
-      const effectiveStart = needsInput
+      const editing = needsInput || row.manualEdit;
+      const effectiveStart = editing
         ? (row.editStart || "--:--")
-        : row.earlyOvertime ? row.ocrStart : row.stdStart;
-      const effectiveEnd = needsInput ? (row.editEnd || "--:--") : row.stdEnd;
+        : wp.includeEarlyOvertime ? row.ocrStart : row.stdStart;
+      const effectiveEnd = editing ? (row.editEnd || "--:--") : row.stdEnd;
       const rowDate = getRowDate(row.year, row.date);
-      const autoHoliday = detectHoliday(rowDate, wp);
-      const holiday = row.holidayOverride === "auto" ? autoHoliday : row.holidayOverride;
+      const holiday = detectHoliday(rowDate, wp);
       const buckets = calcRowBuckets(
         effectiveStart, effectiveEnd, row.ocrStart, row.stdStart,
-        row.breakMinutes, row.earlyOvertime, holiday,
+        row.breakMinutes, wp.includeEarlyOvertime, holiday,
+        wp.applyLateNightPremium !== false,
       );
-      return addBuckets(acc, buckets);
-    }, EMPTY_BUCKETS);
+      map[row.workplaceId] = addBuckets(map[row.workplaceId] ?? { ...EMPTY_BUCKETS }, buckets);
+    }
+    return map;
   }, [timecardRows, workplaces]);
 
-  // 正味労働時間（時給制総支給用）
-  const totalHours = useMemo(() =>
-    monthlyBuckets.basic + monthlyBuckets.overtime + monthlyBuckets.earlyOvertime
-    + monthlyBuckets.legalHolidayWork + monthlyBuckets.scheduledHolidayWork,
-    [monthlyBuckets],
+  // 職場別の正味労働時間
+  const hoursByWorkplace = useMemo<Record<string, number>>(() => {
+    const map: Record<string, number> = {};
+    for (const [id, b] of Object.entries(bucketsByWorkplace)) map[id] = bucketNetHours(b);
+    return map;
+  }, [bucketsByWorkplace]);
+
+  // 全職場合計の正味労働時間（確定スナップショット用）
+  const totalHours = useMemo(
+    () => Object.values(hoursByWorkplace).reduce((a, b) => a + b, 0),
+    [hoursByWorkplace],
   );
 
+  // 時給制総支給 = Σ（職場別時給 × 職場別実働時間）
+  const hourlyGross = useMemo(() => {
+    let sum = 0;
+    for (const [id, hours] of Object.entries(hoursByWorkplace)) {
+      const rate = parseInt((workplaceRates[id] ?? "").replace(/[^0-9]/g, ""), 10) || 0;
+      sum += rate * hours;
+    }
+    return Math.round(sum);
+  }, [hoursByWorkplace, workplaceRates]);
+
   const monthlyRaw = parseInt(monthlySalaryInput.replace(/[^0-9]/g, ""), 10) || 0;
-  const hourlyRaw  = parseInt(hourlyRateInput.replace(/[^0-9]/g, ""), 10) || 0;
-  const grossAmount = payType === "monthly" ? monthlyRaw : Math.round(hourlyRaw * totalHours);
+  // 確定スナップショットの「適用基本給」用: 主たる事業所（既定→先頭）の時給
+  const primaryHourlyRate = useMemo(() => {
+    const primaryId = workplaces[DEFAULT_WP_KEY] ? DEFAULT_WP_KEY : Object.keys(workplaces)[0];
+    return parseInt((workplaceRates[primaryId] ?? "").replace(/[^0-9]/g, ""), 10) || 0;
+  }, [workplaceRates, workplaces]);
+  const grossAmount = payType === "monthly" ? monthlyRaw : hourlyGross;
 
   // 前月給与の取得（PayrollResultDB → なければモックダミー）
   const yyyymm = toYearMonth(year, month);
   const prevDate = new Date(year, month - 2, 1);
   const prevYM = toYearMonth(prevDate.getFullYear(), prevDate.getMonth() + 1);
+
+  // 前月の職場別時給（"前月と同様"用）。前月の localStorage を参照し、無ければ既定時給。
+  const prevRatesKey = `hourlyRates_${DEFAULT_TENANT_ID}_${employeeId}_${prevDate.getFullYear()}_${prevDate.getMonth() + 1}`;
+  const prevRates = useMemo<Record<string, string>>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const raw = window.localStorage.getItem(prevRatesKey);
+        if (raw) {
+          const parsed = JSON.parse(raw) as Record<string, string>;
+          if (parsed && typeof parsed === "object") return parsed;
+        }
+      } catch {
+        /* フォールバックへ */
+      }
+    }
+    const init: Record<string, string> = {};
+    for (const id of Object.keys(workplaces)) {
+      const def = DEFAULT_HOURLY_RATES[id];
+      if (def) init[id] = toDisplayValue(String(def));
+    }
+    return init;
+  }, [prevRatesKey, workplaces]);
   const prevSnapshot = useMemo(
     () => payrollResultDB.find(
       (p) => p != null && p.employeeId === employeeId && p.targetYearMonth === prevYM,
@@ -1700,7 +1763,7 @@ export function PayrollTab({
       targetYearMonth: yyyymm,
       status: "locked",
       appliedSalaryType: payType === "monthly" ? "月給" : "時給",
-      appliedBaseSalary: payType === "monthly" ? monthlyRaw : hourlyRaw,
+      appliedBaseSalary: payType === "monthly" ? monthlyRaw : primaryHourlyRate,
       totalWorkingHours: payType === "hourly"
         ? Math.round(totalHours * 100) / 100
         : 0,
@@ -1718,20 +1781,6 @@ export function PayrollTab({
   const handleUnlock = () => {
     onUnlockOne(employeeId, yyyymm);
     toast.info(`${monthLabel(currentDate)} の確定を解除しました`);
-  };
-
-  const tableHandlers: Omit<TimecardTableProps, "rows" | "currentDate" | "totalHours" | "monthlyBuckets"> = {
-    workplaces,
-    onWorkplaceChange: handleWorkplaceChange,
-    onEditWorkplace: handleEditWorkplace,
-    onBreakMinutesChange: handleBreakMinutesChange,
-    onEditTime: handleEditTime,
-    onToggleEarlyOvertime: handleToggleEarlyOvertime,
-    onToggleLateNight: handleToggleLateNight,
-    onNoteChange: handleNoteChange,
-    onHolidayOverrideChange: handleHolidayOverrideChange,
-    onToggleExpanded: handleToggleExpanded,
-    onAddManualRow: handleAddManualRow,
   };
 
   const dialogInitial = wpDialogMode === "edit" && wpDialogEditId ? workplaces[wpDialogEditId] ?? null : null;
@@ -1786,13 +1835,29 @@ export function PayrollTab({
             />
           ) : (
             <HourlySection
-              hourlyRate={hourlyRateInput} onHourlyRateChange={setHourlyRateInput}
-              rows={timecardRows} currentDate={currentDate}
-              ocrState={ocrState} onFileSelect={handleFileSelect}
-              totalHours={totalHours} monthlyBuckets={monthlyBuckets} {...tableHandlers}
+              workplaces={workplaces}
+              rows={timecardRows}
+              currentDate={currentDate}
+              ocrState={ocrState}
+              onFileSelect={handleFileSelect}
+              bucketsByWorkplace={bucketsByWorkplace}
+              rates={workplaceRates}
+              prevRates={prevRates}
+              activeWpId={activeWpId}
+              onActiveWpChange={setActiveWpId}
+              onRateChange={handleRateChange}
+              onCopyPrevRate={handleCopyPrevRate}
+              onAddWorkplace={handleAddWorkplaceTab}
+              onEditWorkplace={handleEditWorkplace}
+              onBreakMinutesChange={handleBreakMinutesChange}
+              onEditTime={handleEditTime}
+              onToggleManualEdit={handleToggleManualEdit}
+              onAddManualRow={handleAddManualRow}
             />
           )}
         </div>
+
+        {payType === "hourly" && <AllowancesSection />}
       </fieldset>
 
       <ResultCard

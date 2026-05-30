@@ -236,6 +236,27 @@ export default function Dashboard() {
       }
       return mutated ? next : prev;
     });
+    // 職場マスタ: 旧バージョンに無い設定フィールド（朝残業算入・深夜割増適用）を補完
+    setWorkplaces((prev) => {
+      let mutated = false;
+      const next: Record<string, WorkplaceDef> = { ...prev };
+      for (const [key, wp] of Object.entries(prev)) {
+        const seed = DEFAULT_WORKPLACES[key];
+        if (typeof wp.includeEarlyOvertime !== "boolean" || typeof wp.applyLateNightPremium !== "boolean") {
+          next[key] = {
+            ...wp,
+            includeEarlyOvertime: typeof wp.includeEarlyOvertime === "boolean"
+              ? wp.includeEarlyOvertime
+              : seed?.includeEarlyOvertime ?? false,
+            applyLateNightPremium: typeof wp.applyLateNightPremium === "boolean"
+              ? wp.applyLateNightPremium
+              : seed?.applyLateNightPremium ?? true,
+          };
+          mutated = true;
+        }
+      }
+      return mutated ? next : prev;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

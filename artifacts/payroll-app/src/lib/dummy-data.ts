@@ -189,6 +189,8 @@ export interface WorkplaceDef {
   roundingRule: RoundingType;
   legalHoliday: DayOfWeek;          // 法定休日(週1日)
   scheduledHoliday: DayOfWeek[];    // 所定休日
+  includeEarlyOvertime: boolean;    // 始業前の打刻を朝残業として算入するか
+  applyLateNightPremium: boolean;   // 22:00以降の深夜割増を適用するか
 }
 
 export const DEFAULT_WORKPLACES: Record<string, WorkplaceDef> = {
@@ -200,6 +202,7 @@ export const DEFAULT_WORKPLACES: Record<string, WorkplaceDef> = {
     defaultStartTime: "09:00", defaultEndTime: "18:00",
     defaultRestMinutes: 60, roundingRule: "1min",
     legalHoliday: "Sunday", scheduledHoliday: ["Saturday"],
+    includeEarlyOvertime: false, applyLateNightPremium: true,
   },
   w2: {
     tenantId: DEFAULT_TENANT_ID,
@@ -209,7 +212,14 @@ export const DEFAULT_WORKPLACES: Record<string, WorkplaceDef> = {
     defaultStartTime: "10:00", defaultEndTime: "19:00",
     defaultRestMinutes: 45, roundingRule: "15min",
     legalHoliday: "Sunday", scheduledHoliday: ["Saturday"],
+    includeEarlyOvertime: true, applyLateNightPremium: true,
   },
+};
+
+// 事業所ごとの既定時給（モックアップのシード値）。時給制シミュレーターの初期表示に使用。
+export const DEFAULT_HOURLY_RATES: Record<string, number> = {
+  w1: 1200,
+  w2: 1300,
 };
 
 export const NEW_WORKPLACE_COLORS = [
