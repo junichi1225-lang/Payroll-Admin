@@ -32,12 +32,16 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogClose,
 } from "@/components/ui/dialog";
+import {
+  Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerDescription,
+} from "@/components/ui/drawer";
 import { cn } from "@/lib/utils";
 import {
-  Calculator, Clock, Info, TrendingUp, Upload, Loader2,
-  CheckCircle2, AlertCircle, Plus, ScanLine,
+  Calculator, Clock, Info, TrendingUp, Loader2,
+  CheckCircle2, AlertCircle, Plus,
   CalendarDays, Moon, Sunrise, MapPin, PencilLine, Pencil,
   Briefcase, Zap, CalendarOff, Share2, Download,
+  Camera, FileSpreadsheet, Keyboard, ChevronRight,
 } from "lucide-react";
 
 // ─────────────────────────────────────────────
@@ -295,40 +299,239 @@ function MonthlyInput({
 
 type OcrState = "idle" | "loading" | "done";
 
-function OcrUploadBanner({ ocrState, onFileSelect }: { ocrState: OcrState; onFileSelect: (f: File) => void }) {
-  const fileRef = useRef<HTMLInputElement>(null);
+// ─────────────────────────────────────────────
+// 打刻データ追加: ボトムシート（3つの入力モード）
+// ─────────────────────────────────────────────
+
+interface DataInputDrawerProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onPickOcr: () => void;
+  onPickManual: () => void;
+  onPickCsv: () => void;
+}
+
+function DataInputDrawer({ open, onOpenChange, onPickOcr, onPickManual, onPickCsv }: DataInputDrawerProps) {
+  const options = [
+    {
+      key: "ocr",
+      icon: Camera,
+      title: "画像から自動入力",
+      desc: "タイムカードの写真をAI（OCR）で読み取り",
+      style: "bg-primary/10 text-primary",
+      onClick: onPickOcr,
+      testid: "input-mode-ocr",
+    },
+    {
+      key: "manual",
+      icon: Keyboard,
+      title: "手動で入力する",
+      desc: "事業所・日付・時間を選んで1件ずつ入力",
+      style: "bg-amber-100 text-amber-700",
+      onClick: onPickManual,
+      testid: "input-mode-manual",
+    },
+    {
+      key: "csv",
+      icon: FileSpreadsheet,
+      title: "Excel / CSV からインポート",
+      desc: "勤怠ファイルを一括で取り込み",
+      style: "bg-emerald-100 text-emerald-700",
+      onClick: onPickCsv,
+      testid: "input-mode-csv",
+    },
+  ];
   return (
-    <div className={cn(
-      "rounded-xl border-2 border-dashed p-4 flex flex-col sm:flex-row items-center gap-3 transition-colors",
-      ocrState === "loading" ? "border-primary/30 bg-primary/5"
-        : ocrState === "done" ? "border-green-400/40 bg-green-50/60"
-        : "border-border hover:border-primary/40 hover:bg-muted/30"
-    )}>
-      <input ref={fileRef} type="file" accept="image/*,.pdf" className="hidden"
-        onChange={(e) => { const f = e.target.files?.[0]; if (f) onFileSelect(f); e.target.value = ""; }} />
-      <div className="flex items-center gap-3 flex-1 min-w-0">
-        <div className={cn("w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0",
-          ocrState === "loading" ? "bg-primary/10" : ocrState === "done" ? "bg-green-100" : "bg-muted")}>
-          {ocrState === "loading" ? <Loader2 className="w-5 h-5 text-primary animate-spin" />
-            : ocrState === "done" ? <CheckCircle2 className="w-5 h-5 text-green-600" />
-            : <ScanLine className="w-5 h-5 text-muted-foreground" />}
+    <Drawer open={open} onOpenChange={onOpenChange}>
+      <DrawerContent data-testid="data-input-drawer">
+        <div className="mx-auto w-full max-w-md">
+          <DrawerHeader className="text-left">
+            <DrawerTitle>打刻データを追加</DrawerTitle>
+            <DrawerDescription>入力方法を選んでください</DrawerDescription>
+          </DrawerHeader>
+          <div className="px-4 pb-6 space-y-2.5">
+            {options.map(({ key, icon: Icon, title, desc, style, onClick, testid }) => (
+              <button
+                key={key}
+                type="button"
+                data-testid={testid}
+                onClick={onClick}
+                className="w-full flex items-center gap-3.5 rounded-2xl border border-border bg-card p-4 text-left transition-colors hover:bg-muted/50 active:bg-muted"
+              >
+                <div className={cn("w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0", style)}>
+                  <Icon className="w-5 h-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-bold text-foreground">{title}</p>
+                  <p className="text-xs text-muted-foreground leading-snug">{desc}</p>
+                </div>
+                <ChevronRight className="w-4 h-4 text-muted-foreground/50 flex-shrink-0" />
+              </button>
+            ))}
+          </div>
         </div>
-        <div className="min-w-0">
-          {ocrState === "loading"
-            ? <><p className="text-sm font-semibold text-primary">AI解析中...</p><p className="text-xs text-muted-foreground">タイムカード画像を読み取っています</p></>
-            : ocrState === "done"
-            ? <><p className="text-sm font-semibold text-green-700">読み込み完了</p><p className="text-xs text-muted-foreground">エラー行を手修正してください</p></>
-            : <><p className="text-sm font-semibold text-foreground">タイムカードをOCRで読み込む</p><p className="text-xs text-muted-foreground">画像・PDF をアップロードしてAI解析</p></>}
+      </DrawerContent>
+    </Drawer>
+  );
+}
+
+// ─────────────────────────────────────────────
+// 手動入力モーダル（フルスクリーン別ビュー）
+// ─────────────────────────────────────────────
+
+interface ManualEntryDraft {
+  rowId: string | null;
+  workplaceId: string;
+  day: number;
+  start: string;
+  end: string;
+  breakMinutes: number;
+}
+
+interface ManualEntryModalProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  workplaces: Record<string, WorkplaceDef>;
+  currentDate: Date;
+  draft: ManualEntryDraft | null;
+  lockDate: boolean;
+  onSave: (draft: ManualEntryDraft) => void;
+}
+
+function ManualEntryModal({
+  open, onOpenChange, workplaces, currentDate, draft, lockDate, onSave,
+}: ManualEntryModalProps) {
+  const [workplaceId, setWorkplaceId] = useState("");
+  const [day, setDay] = useState(1);
+  const [start, setStart] = useState("");
+  const [end, setEnd] = useState("");
+  const [breakMinutes, setBreakMinutes] = useState(60);
+
+  useEffect(() => {
+    if (open && draft) {
+      setWorkplaceId(draft.workplaceId);
+      setDay(draft.day);
+      setStart(draft.start);
+      setEnd(draft.end);
+      setBreakMinutes(draft.breakMinutes);
+    }
+  }, [open, draft]);
+
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth() + 1;
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const dayOptions = Array.from({ length: daysInMonth }, (_, i) => i + 1);
+  const wpList = Object.values(workplaces);
+
+  const valid = (t: string) => /^\d{2}:\d{2}$/.test(t);
+  const canSave = !!workplaceId && valid(start) && valid(end);
+
+  const handleSave = () => {
+    if (!canSave) return;
+    onSave({ rowId: draft?.rowId ?? null, workplaceId, day, start, end, breakMinutes });
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        data-testid="manual-entry-modal"
+        className="max-w-md w-full h-[100dvh] sm:h-auto sm:max-h-[90vh] rounded-none sm:rounded-2xl flex flex-col gap-0 p-0"
+      >
+        <DialogHeader className="px-5 pt-5 pb-3 border-b border-border text-left">
+          <DialogTitle>{draft?.rowId ? "打刻を修正" : "打刻データを手動入力"}</DialogTitle>
+          <DialogDescription>事業所・対象日・時間を入力して保存してください</DialogDescription>
+        </DialogHeader>
+
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+          {/* 勤務先の事業所 */}
+          <div className="space-y-1.5">
+            <label className="block text-sm font-semibold text-foreground">勤務先の事業所</label>
+            <Select value={workplaceId} onValueChange={setWorkplaceId}>
+              <SelectTrigger data-testid="manual-workplace" className="w-full">
+                <SelectValue placeholder="事業所を選択" />
+              </SelectTrigger>
+              <SelectContent>
+                {wpList.map((wp) => (
+                  <SelectItem key={wp.id} value={wp.id}>{wp.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* 対象日 */}
+          <div className="space-y-1.5">
+            <label className="block text-sm font-semibold text-foreground">対象日</label>
+            <Select value={String(day)} onValueChange={(v) => setDay(parseInt(v, 10))} disabled={lockDate}>
+              <SelectTrigger data-testid="manual-day" className="w-full">
+                <SelectValue placeholder="日付を選択" />
+              </SelectTrigger>
+              <SelectContent className="max-h-72">
+                {dayOptions.map((d) => {
+                  const dt = new Date(year, month - 1, d);
+                  return (
+                    <SelectItem key={d} value={String(d)}>
+                      {month}/{d}（{DOW_JP[DOW_LIST[dt.getDay()]]}）
+                    </SelectItem>
+                  );
+                })}
+              </SelectContent>
+            </Select>
+            {lockDate && <p className="text-[11px] text-muted-foreground">エラー行の修正のため対象日は固定されています</p>}
+          </div>
+
+          {/* 開始 / 終了 時間 */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <label className="block text-sm font-semibold text-foreground">開始時間</label>
+              <input
+                type="time" value={start} onChange={(e) => setStart(e.target.value)}
+                data-testid="manual-start"
+                className="w-full px-3 py-3 rounded-xl border border-border bg-background text-base font-medium focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="block text-sm font-semibold text-foreground">終了時間</label>
+              <input
+                type="time" value={end} onChange={(e) => setEnd(e.target.value)}
+                data-testid="manual-end"
+                className="w-full px-3 py-3 rounded-xl border border-border bg-background text-base font-medium focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50"
+              />
+            </div>
+          </div>
+
+          {/* 休憩 */}
+          <div className="space-y-1.5">
+            <label className="block text-sm font-semibold text-foreground">休憩時間(分)</label>
+            <input
+              type="number" min={0} max={240} step={15} value={breakMinutes}
+              onChange={(e) => setBreakMinutes(parseInt(e.target.value, 10) || 0)}
+              data-testid="manual-break"
+              className="w-32 px-3 py-3 rounded-xl border border-border bg-background text-base font-medium focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50"
+            />
+          </div>
         </div>
-      </div>
-      <button disabled={ocrState === "loading"} onClick={() => fileRef.current?.click()}
-        className={cn("flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all flex-shrink-0",
-          ocrState === "loading" ? "bg-muted text-muted-foreground cursor-not-allowed"
-            : "bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm")}>
-        {ocrState === "loading" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-        {ocrState === "loading" ? "解析中..." : ocrState === "done" ? "再読込" : "ファイルを選択"}
-      </button>
-    </div>
+
+        <DialogFooter className="px-5 py-4 border-t border-border gap-2 sm:gap-2">
+          <DialogClose asChild>
+            <button type="button" className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl border border-border text-sm font-semibold text-muted-foreground hover:bg-muted transition-colors">
+              キャンセル
+            </button>
+          </DialogClose>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={!canSave}
+            data-testid="manual-save"
+            className={cn(
+              "flex-1 sm:flex-none px-5 py-2.5 rounded-xl text-sm font-bold transition-colors",
+              canSave ? "bg-primary text-primary-foreground hover:bg-primary/90" : "bg-muted text-muted-foreground cursor-not-allowed",
+            )}
+          >
+            保存
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -387,12 +590,15 @@ interface TimecardTableProps {
   onBreakMinutesChange: (id: string, mins: number) => void;
   onEditTime: (id: string, field: "editStart" | "editEnd", value: string) => void;
   onToggleManualEdit: (id: string) => void;
-  onAddManualRow: () => void;
+  /** 「打刻データを追加」ボトムシートを開く */
+  onRequestAddData: () => void;
+  /** エラー行タップで手動入力モーダルを開く */
+  onOpenManual: (rowId: string) => void;
 }
 
 function TimecardTable({
   rows, currentDate, workplace,
-  onBreakMinutesChange, onEditTime, onToggleManualEdit, onAddManualRow,
+  onBreakMinutesChange, onEditTime, onToggleManualEdit, onRequestAddData, onOpenManual,
 }: TimecardTableProps) {
   const errorCount = rows.filter(
     (r) => (r.ocrStatus === "error" || r.ocrStatus === "manual") && !(r.editStart && r.editEnd)
@@ -411,7 +617,31 @@ function TimecardTable({
             <AlertCircle className="w-3 h-3" />要修正 {errorCount} 件
           </span>
         )}
+        <button
+          type="button"
+          onClick={onRequestAddData}
+          data-testid="add-data-button-header"
+          className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:bg-primary/10 rounded-lg px-2 py-1 transition-colors"
+        >
+          <Plus className="w-3.5 h-3.5" />打刻データを追加
+        </button>
       </div>
+
+      {/* 手修正が必要なエラー行のアラート */}
+      {errorCount > 0 && (
+        <div
+          data-testid="ocr-error-alert"
+          className="flex items-start gap-2.5 rounded-xl border border-red-300 bg-red-50 px-3.5 py-3"
+        >
+          <AlertCircle className="w-4 h-4 text-red-600 flex-shrink-0 mt-0.5" />
+          <div className="min-w-0">
+            <p className="text-sm font-bold text-red-700">手修正が必要です</p>
+            <p className="text-xs text-red-600/90 leading-snug">
+              {errorCount}件の打刻を読み取れませんでした。赤色の行をタップして時間を入力してください。
+            </p>
+          </div>
+        </div>
+      )}
 
       {rows.length === 0 ? (
         <div className="rounded-xl border border-dashed border-border py-10 text-center space-y-1.5">
@@ -437,11 +667,45 @@ function TimecardTable({
                 const isError = row.ocrStatus === "error";
                 const isManual = row.ocrStatus === "manual";
                 const needsInput = isError || isManual;
-                const hasEditedBoth = !!(row.editStart && row.editEnd);
-                const resolved = row.ocrStatus === "success" || (needsInput && hasEditedBoth);
-                // needsInput行は常に入力UI。success行はえんぴつ(手動上書き)を押した時だけ入力UI。
-                const editing = needsInput || row.manualEdit;
 
+                const rowDate = getRowDate(row.year, row.date);
+                const holiday = detectHoliday(rowDate, wp);
+
+                // 未入力（OCRエラー等）行: 行全体をタップ → 手動入力モーダルを開く
+                if (needsInput) {
+                  return (
+                    <tr
+                      key={row.id}
+                      onClick={() => onOpenManual(row.id)}
+                      data-testid="timecard-error-row"
+                      className="cursor-pointer border-2 border-red-400 bg-red-50/80 hover:bg-red-100/80 transition-colors"
+                    >
+                      <td className="px-2 py-3 text-center">
+                        <AlertCircle className="w-4 h-4 text-red-500 mx-auto" />
+                      </td>
+                      <td className="px-2 py-3 align-middle">
+                        <span className="text-xs font-medium text-foreground whitespace-nowrap">
+                          {row.date}
+                          <span className="ml-1 text-[10px] text-muted-foreground">({DOW_JP[DOW_LIST[rowDate.getDay()]]})</span>
+                        </span>
+                      </td>
+                      <td className="px-2 py-3" colSpan={3}>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-red-600 tabular-nums">--:-- – --:--</span>
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-red-700 bg-white border border-red-300 rounded-full px-2 py-0.5">
+                            <PencilLine className="w-2.5 h-2.5" />タップして修正
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-1 py-3 text-right">
+                        <ChevronRight className="w-4 h-4 text-red-400 ml-auto" />
+                      </td>
+                    </tr>
+                  );
+                }
+
+                // 確定済み（success）行
+                const editing = row.manualEdit;
                 const effectiveStart = editing
                   ? (row.editStart || "--:--")
                   : wp.includeEarlyOvertime ? row.ocrStart : row.stdStart;
@@ -449,27 +713,17 @@ function TimecardTable({
 
                 const breakManuallyEdited = row.isRestManuallyEdited;
 
-                const rowDate = getRowDate(row.year, row.date);
-                const holiday = detectHoliday(rowDate, wp);
-
                 const gross = calcHours(effectiveStart, effectiveEnd);
                 const net = gross > 0 ? Math.max(0, gross - row.breakMinutes / 60) : 0;
 
-                const rowBg = isError && !hasEditedBoth ? "bg-red-50/60"
-                  : isManual && !hasEditedBoth ? "bg-blue-50/40"
-                  : holiday === "legal_holiday" ? "bg-rose-50/30 hover:bg-rose-50/50"
+                const rowBg = holiday === "legal_holiday" ? "bg-rose-50/30 hover:bg-rose-50/50"
                   : holiday === "scheduled_holiday" ? "bg-orange-50/30 hover:bg-orange-50/50"
                   : "bg-background hover:bg-muted/20";
 
                 return (
                   <tr key={row.id} className={cn("transition-colors border-b border-border/40 last:border-b-0", rowBg)}>
                     <td className="px-2 py-2.5 text-center">
-                      {resolved
-                        ? <CheckCircle2 className="w-4 h-4 text-green-500 mx-auto" />
-                        : isError
-                        ? <AlertCircle className="w-4 h-4 text-red-500 mx-auto" />
-                        : <div className="w-4 h-4 rounded-full border-2 border-dashed border-muted-foreground/40 mx-auto" />
-                      }
+                      <CheckCircle2 className="w-4 h-4 text-green-500 mx-auto" />
                     </td>
 
                     {/* 日付 + 休日バッジ */}
@@ -506,9 +760,7 @@ function TimecardTable({
                             className={cn(
                               "w-[86px] px-2 py-1.5 rounded-lg border text-xs font-medium",
                               "focus:outline-none focus:ring-2 transition-all",
-                              !row.editStart && isError
-                                ? "border-red-400 bg-background focus:ring-red-200 focus:border-red-500"
-                                : row.editStart
+                              row.editStart
                                 ? "border-yellow-400 bg-yellow-50 focus:ring-yellow-200 focus:border-yellow-500"
                                 : "border-border bg-background focus:ring-primary/20 focus:border-primary/50"
                             )}
@@ -520,16 +772,11 @@ function TimecardTable({
                             className={cn(
                               "w-[86px] px-2 py-1.5 rounded-lg border text-xs font-medium",
                               "focus:outline-none focus:ring-2 transition-all",
-                              !row.editEnd && isError
-                                ? "border-red-400 bg-background focus:ring-red-200 focus:border-red-500"
-                                : row.editEnd
+                              row.editEnd
                                 ? "border-yellow-400 bg-yellow-50 focus:ring-yellow-200 focus:border-yellow-500"
                                 : "border-border bg-background focus:ring-primary/20 focus:border-primary/50"
                             )}
                           />
-                          {isError && !hasEditedBoth && (
-                            <span className="text-[10px] text-red-600 font-semibold bg-red-50 border border-red-200 rounded px-1 py-0.5 whitespace-nowrap">要修正</span>
-                          )}
                         </div>
                       ) : (
                         <div className="flex items-center gap-1.5">
@@ -579,21 +826,19 @@ function TimecardTable({
 
                     {/* えんぴつ: 手動上書き */}
                     <td className="px-1 py-2.5 text-right">
-                      {!needsInput && (
-                        <button
-                          onClick={() => onToggleManualEdit(row.id)}
-                          className={cn(
-                            "inline-flex items-center justify-center w-7 h-7 rounded-lg transition-colors",
-                            row.manualEdit
-                              ? "bg-primary/10 text-primary"
-                              : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                          )}
-                          aria-label={row.manualEdit ? "手動上書きを閉じる" : "打刻を手動で上書き"}
-                          title={row.manualEdit ? "手動上書きを閉じる" : "打刻を手動で上書き"}
-                        >
-                          <Pencil className="w-3.5 h-3.5" />
-                        </button>
-                      )}
+                      <button
+                        onClick={() => onToggleManualEdit(row.id)}
+                        className={cn(
+                          "inline-flex items-center justify-center w-7 h-7 rounded-lg transition-colors",
+                          row.manualEdit
+                            ? "bg-primary/10 text-primary"
+                            : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                        )}
+                        aria-label={row.manualEdit ? "手動上書きを閉じる" : "打刻を手動で上書き"}
+                        title={row.manualEdit ? "手動上書きを閉じる" : "打刻を手動で上書き"}
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
                     </td>
                   </tr>
                 );
@@ -603,10 +848,12 @@ function TimecardTable({
         </div>
       )}
 
-      <button onClick={onAddManualRow}
+      <button
+        onClick={onRequestAddData}
+        data-testid="add-data-button-table"
         className="w-full flex items-center justify-center gap-2 py-2 text-xs font-semibold text-muted-foreground hover:text-foreground hover:bg-muted/40 rounded-lg border border-dashed border-border transition-colors"
       >
-        <Plus className="w-3.5 h-3.5" />{wp.name} に打刻行を手動で追加
+        <Plus className="w-3.5 h-3.5" />打刻データを追加
       </button>
     </div>
   );
@@ -626,7 +873,6 @@ interface HourlySectionProps {
   rows: TimecardRow[];
   currentDate: Date;
   ocrState: OcrState;
-  onFileSelect: (f: File) => void;
   /** 職場ID → 当月の集計バケット */
   bucketsByWorkplace: Record<string, TimeBuckets>;
   /** 職場ID → 入力中の時給（カンマ区切り文字列） */
@@ -642,14 +888,18 @@ interface HourlySectionProps {
   onBreakMinutesChange: (id: string, mins: number) => void;
   onEditTime: (id: string, field: "editStart" | "editEnd", value: string) => void;
   onToggleManualEdit: (id: string) => void;
-  onAddManualRow: (wpId: string) => void;
+  /** 「打刻データを追加」ボトムシートを開く */
+  onRequestAddData: () => void;
+  /** エラー行タップ等で手動入力モーダルを開く（rowId=対象行） */
+  onOpenManual: (rowId: string) => void;
 }
 
 function HourlySection({
-  workplaces, rows, currentDate, ocrState, onFileSelect,
+  workplaces, rows, currentDate, ocrState,
   bucketsByWorkplace, rates, prevRates, activeWpId, onActiveWpChange,
   onRateChange, onCopyPrevRate, onAddWorkplace, onEditWorkplace,
-  onBreakMinutesChange, onEditTime, onToggleManualEdit, onAddManualRow,
+  onBreakMinutesChange, onEditTime, onToggleManualEdit,
+  onRequestAddData, onOpenManual,
 }: HourlySectionProps) {
   const wpList = Object.values(workplaces);
   const activeWp = workplaces[activeWpId] ?? wpList[0];
@@ -665,8 +915,6 @@ function HourlySection({
 
   return (
     <div className="space-y-5">
-      <OcrUploadBanner ocrState={ocrState} onFileSelect={onFileSelect} />
-
       {/* 事業所タブ */}
       <div className="flex items-center gap-1.5 flex-wrap border-b border-border pb-px -mb-px">
         {wpList.map((wp) => {
@@ -755,15 +1003,27 @@ function HourlySection({
             </div>
           </div>
 
-          <TimecardTable
-            rows={activeRows}
-            currentDate={currentDate}
-            workplace={activeWp}
-            onBreakMinutesChange={onBreakMinutesChange}
-            onEditTime={onEditTime}
-            onToggleManualEdit={onToggleManualEdit}
-            onAddManualRow={() => onAddManualRow(activeWp.id)}
-          />
+          {ocrState === "loading" ? (
+            <div
+              data-testid="ocr-loading"
+              className="rounded-xl border border-primary/20 bg-primary/5 py-12 flex flex-col items-center justify-center gap-3"
+            >
+              <Loader2 className="w-8 h-8 text-primary animate-spin" />
+              <p className="text-sm font-semibold text-primary">OCR解析中...</p>
+              <p className="text-xs text-muted-foreground">タイムカード画像を読み取っています</p>
+            </div>
+          ) : (
+            <TimecardTable
+              rows={activeRows}
+              currentDate={currentDate}
+              workplace={activeWp}
+              onBreakMinutesChange={onBreakMinutesChange}
+              onEditTime={onEditTime}
+              onToggleManualEdit={onToggleManualEdit}
+              onRequestAddData={onRequestAddData}
+              onOpenManual={onOpenManual}
+            />
+          )}
 
           <BucketSummary buckets={activeBuckets} />
 
@@ -1434,6 +1694,16 @@ export function PayrollTab({
   const [monthlySalaryInput, setMonthlySalaryInput] = useState("");
   const [ocrState, setOcrState] = useState<OcrState>("idle");
 
+  // 打刻データ追加フロー
+  const [inputDrawerOpen, setInputDrawerOpen] = useState(false);
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualDraft, setManualDraft] = useState<ManualEntryDraft | null>(null);
+  const [manualLockDate, setManualLockDate] = useState(false);
+  const ocrInputRef = useRef<HTMLInputElement>(null);
+  const csvInputRef = useRef<HTMLInputElement>(null);
+  // OCRの遅延コールバックが古い状態を上書きしないようにする実行ID
+  const ocrRunIdRef = useRef(0);
+
   // タイムカード State（localStorage 同期 — モックアップデモ用）
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth() + 1;
@@ -1477,20 +1747,82 @@ export function PayrollTab({
   const [wpDialogRowId, setWpDialogRowId] = useState<string | null>(null);
   const [wpDialogEditId, setWpDialogEditId] = useState<string | null>(null);
 
-  // 月 / 従業員変更時に OCR バナー状態をリセット
+  // 月 / 従業員変更時に OCR バナー状態をリセット（進行中の遅延コールバックも無効化）
   useEffect(() => {
+    ocrRunIdRef.current += 1;
     setOcrState("idle");
   }, [storageKey]);
 
-  const handleFileSelect = (_file: File) => {
+  // ① 画像からOCR: 数秒のローディング後に自動入力。3日・5日は読み取りエラー（要手修正）にする。
+  const handleOcrFile = () => {
+    const runId = (ocrRunIdRef.current += 1);
     setOcrState("loading");
     setTimeout(() => {
-      const year = currentDate.getFullYear();
-      const month = currentDate.getMonth() + 1;
+      // 月/従業員が変わった、またはCSV等で別操作が走った場合は古い結果を破棄
+      if (ocrRunIdRef.current !== runId) return;
       const entries = getTimecardEntries(employeeId, year, month);
-      setTimecardRows(seedRows(entries, workplaces));
+      const seeded = seedRows(entries, workplaces).map((r) => {
+        const dm = r.date.match(/^(\d+)\/(\d+)/);
+        const day = dm ? parseInt(dm[2], 10) : 0;
+        if (day === 3 || day === 5) {
+          return {
+            ...r,
+            ocrStatus: "error" as TimecardOcrStatus,
+            ocrStart: "", ocrEnd: "", stdStart: "--:--", stdEnd: "--:--",
+            editStart: "", editEnd: "", timeManuallyEdited: false, manualEdit: false,
+          };
+        }
+        return { ...r, ocrStatus: "success" as TimecardOcrStatus };
+      });
+      setTimecardRows(seeded);
       setOcrState("done");
+      const errs = seeded.filter((r) => r.ocrStatus === "error").length;
+      if (errs > 0) {
+        toast.error(`${errs}件の打刻が読み取れませんでした`, { description: "赤色の行をタップして手修正してください" });
+      } else {
+        toast.success("OCR解析が完了しました");
+      }
     }, 2500);
+  };
+
+  // ③ Excel / CSV インポート: 全行を取り込み済みにしてトーストで件数を表示。
+  const handleCsvFile = () => {
+    // 進行中のOCR遅延コールバックを無効化（インポート結果の上書きを防ぐ）
+    ocrRunIdRef.current += 1;
+    const entries = getTimecardEntries(employeeId, year, month);
+    const seeded = seedRows(entries, workplaces).map((r) => ({ ...r, ocrStatus: "success" as TimecardOcrStatus }));
+    setTimecardRows(seeded);
+    setOcrState("done");
+    toast.success(`${seeded.length}件のデータをインポートしました`);
+  };
+
+  // ボトムシートの各モード
+  const handlePickOcr = () => { setInputDrawerOpen(false); ocrInputRef.current?.click(); };
+  const handlePickCsv = () => { setInputDrawerOpen(false); csvInputRef.current?.click(); };
+  const handlePickManual = () => { handleOpenManual(null); };
+
+  // ② 手動入力モーダルを開く。rowId 指定時はエラー行の修正（対象日固定）。
+  const handleOpenManual = (rowId: string | null) => {
+    setInputDrawerOpen(false);
+    const activeWp = workplaces[activeWpId] ?? workplaces[DEFAULT_WP_KEY] ?? Object.values(workplaces)[0];
+    if (rowId) {
+      const row = timecardRows.find((r) => r.id === rowId);
+      if (!row) return;
+      const dm = row.date.match(/^(\d+)\/(\d+)/);
+      const day = dm ? parseInt(dm[2], 10) : currentDate.getDate();
+      setManualDraft({ rowId, workplaceId: row.workplaceId, day, start: "", end: "", breakMinutes: row.breakMinutes });
+      setManualLockDate(true);
+    } else {
+      setManualDraft({
+        rowId: null,
+        workplaceId: activeWp?.id ?? DEFAULT_WP_KEY,
+        day: currentDate.getDate(),
+        start: "", end: "",
+        breakMinutes: activeWp?.defaultRestMinutes ?? 60,
+      });
+      setManualLockDate(false);
+    }
+    setManualOpen(true);
   };
 
   // 事業所タブの「＋事業所を追加」: 新規作成ダイアログを開く
@@ -1595,27 +1927,55 @@ export function PayrollTab({
       };
     }));
 
-  const handleAddManualRow = (workplaceId: string) => {
-    const d = currentDate;
-    manualRowCounter += 1;
+  // 手動入力モーダルの保存: rowId 指定時はエラー行を確定、未指定時は新規行を追加。
+  const handleManualSave = (draft: ManualEntryDraft) => {
+    const { rowId, workplaceId, day, start, end, breakMinutes } = draft;
     const wp = workplaces[workplaceId] ?? workplaces[DEFAULT_WP_KEY];
-    setTimecardRows((prev) => [
-      ...prev,
-      {
-        tenantId: DEFAULT_TENANT_ID,
-        id: `m${manualRowCounter}`,
-        date: `${d.getMonth() + 1}/${d.getDate()}`,
-        year: d.getFullYear(), month: d.getMonth() + 1,
-        ocrStatus: "manual",
-        ocrStart: "", ocrEnd: "", editStart: "", editEnd: "",
-        stdStart: "--:--", stdEnd: "--:--",
-        workplaceId: workplaces[workplaceId] ? workplaceId : DEFAULT_WP_KEY,
-        breakMinutes: wp?.defaultRestMinutes ?? 60,
-        timeManuallyEdited: false,
-        manualEdit: false,
-        isRestManuallyEdited: false,
-      },
-    ]);
+    const resolvedWpId = workplaces[workplaceId] ? workplaceId : DEFAULT_WP_KEY;
+    const restEdited = breakMinutes !== (wp?.defaultRestMinutes ?? 60);
+
+    if (rowId) {
+      setTimecardRows((prev) => prev.map((r) =>
+        r.id === rowId
+          ? {
+              ...r,
+              workplaceId: resolvedWpId,
+              breakMinutes,
+              isRestManuallyEdited: restEdited || r.isRestManuallyEdited,
+              ocrStatus: "success" as TimecardOcrStatus,
+              ocrStart: start, ocrEnd: end,
+              stdStart: start, stdEnd: end,
+              editStart: start, editEnd: end,
+              timeManuallyEdited: true,
+              manualEdit: false,
+            }
+          : r
+      ));
+      toast.success("打刻を修正しました");
+    } else {
+      manualRowCounter += 1;
+      const dt = new Date(year, month - 1, day);
+      const dateLabel = `${month}/${day}（${DOW_JP[DOW_LIST[dt.getDay()]]}）`;
+      setTimecardRows((prev) => [
+        ...prev,
+        {
+          tenantId: DEFAULT_TENANT_ID,
+          id: `m${manualRowCounter}`,
+          date: dateLabel,
+          year, month,
+          ocrStatus: "success",
+          ocrStart: start, ocrEnd: end, editStart: start, editEnd: end,
+          stdStart: start, stdEnd: end,
+          workplaceId: resolvedWpId,
+          breakMinutes,
+          timeManuallyEdited: true,
+          manualEdit: false,
+          isRestManuallyEdited: restEdited,
+        },
+      ]);
+      toast.success("打刻データを保存しました");
+    }
+    setManualOpen(false);
   };
 
   // 職場別 5区分集計 (workplaces / timecardRows 変更で再計算)
@@ -1838,7 +2198,6 @@ export function PayrollTab({
               rows={timecardRows}
               currentDate={currentDate}
               ocrState={ocrState}
-              onFileSelect={handleFileSelect}
               bucketsByWorkplace={bucketsByWorkplace}
               rates={workplaceRates}
               prevRates={prevRates}
@@ -1851,7 +2210,8 @@ export function PayrollTab({
               onBreakMinutesChange={handleBreakMinutesChange}
               onEditTime={handleEditTime}
               onToggleManualEdit={handleToggleManualEdit}
-              onAddManualRow={handleAddManualRow}
+              onRequestAddData={() => setInputDrawerOpen(true)}
+              onOpenManual={handleOpenManual}
             />
           )}
         </div>
@@ -1892,6 +2252,50 @@ export function PayrollTab({
         initial={dialogInitial}
         onSubmit={handleDialogSubmit}
       />
+
+      {/* 打刻データ追加フロー（時給制・編集可能時のみ） */}
+      {payType === "hourly" && !isLocked && (
+        <>
+          {/* 隠しファイル入力（OCR画像 / CSV） */}
+          <input
+            ref={ocrInputRef} type="file" accept="image/*" className="hidden"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleOcrFile(); e.target.value = ""; }}
+          />
+          <input
+            ref={csvInputRef} type="file" accept=".csv,.xls,.xlsx,text/csv" className="hidden"
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleCsvFile(); e.target.value = ""; }}
+          />
+
+          {/* FAB */}
+          <button
+            type="button"
+            onClick={() => setInputDrawerOpen(true)}
+            data-testid="add-data-fab"
+            className="fixed bottom-6 right-6 z-40 inline-flex items-center gap-2 rounded-full bg-primary text-primary-foreground pl-4 pr-5 py-3.5 shadow-lg shadow-primary/30 hover:bg-primary/90 active:scale-95 transition-all"
+          >
+            <Plus className="w-5 h-5" />
+            <span className="text-sm font-bold">打刻データを追加</span>
+          </button>
+
+          <DataInputDrawer
+            open={inputDrawerOpen}
+            onOpenChange={setInputDrawerOpen}
+            onPickOcr={handlePickOcr}
+            onPickManual={handlePickManual}
+            onPickCsv={handlePickCsv}
+          />
+
+          <ManualEntryModal
+            open={manualOpen}
+            onOpenChange={setManualOpen}
+            workplaces={workplaces}
+            currentDate={currentDate}
+            draft={manualDraft}
+            lockDate={manualLockDate}
+            onSave={handleManualSave}
+          />
+        </>
+      )}
     </div>
   );
 }
