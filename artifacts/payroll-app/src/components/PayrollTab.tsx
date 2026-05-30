@@ -15,6 +15,8 @@ import {
   EmployeeMaster,
   PayrollResult,
   DEFAULT_HOURLY_RATES,
+  AllowanceItem,
+  ALLOWANCE_TYPE_PRESETS,
 } from "@/lib/dummy-data";
 import {
   isNursingCareInsuranceTarget,
@@ -40,7 +42,7 @@ import {
   Calculator, Clock, Info, TrendingUp, Loader2,
   CheckCircle2, AlertCircle, Plus,
   CalendarDays, Moon, Sunrise, MapPin, PencilLine, Pencil,
-  Briefcase, Zap, CalendarOff, Share2, Download,
+  Briefcase, Zap, CalendarOff, Share2, Download, Trash2,
   Camera, FileSpreadsheet, Keyboard, ChevronRight,
 } from "lucide-react";
 
@@ -1044,26 +1046,117 @@ function HourlySection({
 }
 
 // ─────────────────────────────────────────────
-// 手当セクション（プレースホルダー: 実計算は今後実装）
+// 手当セクション（通勤手当・役職手当などの支給項目）
+// 入力した手当は総支給額に加算される
 // ─────────────────────────────────────────────
 
-function AllowancesSection() {
+let allowanceCounter = 0;
+function newAllowanceId(): string {
+  allowanceCounter += 1;
+  return `al_${Date.now()}_${allowanceCounter}`;
+}
+
+function AllowancesSection({
+  allowances,
+  onChange,
+  disabled,
+}: {
+  allowances: AllowanceItem[];
+  onChange: (next: AllowanceItem[]) => void;
+  disabled?: boolean;
+}) {
+  const total = allowances.reduce((s, a) => s + (a.amount || 0), 0);
+
+  const addAllowance = () => {
+    onChange([...allowances, { id: newAllowanceId(), type: "", amount: 0 }]);
+  };
+  const updateAllowance = (id: string, patch: Partial<AllowanceItem>) => {
+    onChange(allowances.map((a) => (a.id === id ? { ...a, ...patch } : a)));
+  };
+  const removeAllowance = (id: string) => {
+    onChange(allowances.filter((a) => a.id !== id));
+  };
+
   return (
     <div className="rounded-2xl border border-border bg-card p-5 space-y-3">
       <div className="flex items-center gap-2">
         <Plus className="w-4 h-4 text-muted-foreground" />
         <h3 className="text-sm font-bold text-foreground">手当</h3>
-        <span className="ml-auto text-[10px] font-semibold text-muted-foreground bg-muted border border-border rounded-full px-2 py-0.5">
-          準備中
-        </span>
+        {allowances.length > 0 && (
+          <span className="ml-auto text-xs font-semibold tabular-nums text-foreground" data-testid="allowance-total">
+            合計 {formatJPY(total)}
+          </span>
+        )}
       </div>
       <p className="text-xs text-muted-foreground leading-relaxed">
-        通勤手当・役職手当・資格手当などの支給項目をここで設定できるようになります。
-        現在は基本給（時給 × 実働時間）のみが総支給額に反映されます。
+        通勤手当・役職手当・資格手当などの支給項目を追加すると、総支給額に加算されます。
       </p>
-      <div className="rounded-xl border border-dashed border-border py-6 text-center">
-        <p className="text-xs text-muted-foreground/60">支給項目はまだ登録されていません</p>
-      </div>
+
+      {allowances.length === 0 ? (
+        <div className="rounded-xl border border-dashed border-border py-6 text-center">
+          <p className="text-xs text-muted-foreground/60">支給項目はまだ登録されていません</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {allowances.map((a) => (
+            <div key={a.id} className="flex items-center gap-2" data-testid="allowance-row">
+              <input
+                type="text"
+                value={a.type}
+                list="allowance-type-presets"
+                placeholder="手当の種類"
+                disabled={disabled}
+                onChange={(e) => updateAllowance(a.id, { type: e.target.value })}
+                data-testid="allowance-type-input"
+                className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-border bg-background text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all"
+              />
+              <div className="relative w-32 flex-shrink-0">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm select-none">¥</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={a.amount ? a.amount.toLocaleString("ja-JP") : ""}
+                  placeholder="0"
+                  disabled={disabled}
+                  onChange={(e) => {
+                    const d = e.target.value.replace(/[^0-9]/g, "");
+                    updateAllowance(a.id, { amount: d ? parseInt(d, 10) : 0 });
+                  }}
+                  data-testid="allowance-amount-input"
+                  className="w-full pl-7 pr-3 py-2 rounded-lg border border-border bg-background text-sm text-right tabular-nums text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => removeAllowance(a.id)}
+                disabled={disabled}
+                aria-label="手当を削除"
+                data-testid="allowance-delete"
+                className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-lg border border-border text-muted-foreground hover:text-rose-600 hover:border-rose-200 hover:bg-rose-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <button
+        type="button"
+        onClick={addAllowance}
+        disabled={disabled}
+        data-testid="allowance-add"
+        className="flex items-center justify-center gap-1.5 w-full px-3 py-2 rounded-lg border border-dashed border-border text-xs font-semibold text-muted-foreground hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        <Plus className="w-3.5 h-3.5" />
+        手当を追加
+      </button>
+
+      <datalist id="allowance-type-presets">
+        {ALLOWANCE_TYPE_PRESETS.map((t) => (
+          <option key={t} value={t} />
+        ))}
+      </datalist>
     </div>
   );
 }
@@ -1132,6 +1225,10 @@ function calcDeductions(
 
 interface ResultCardProps {
   grossAmount: number;
+  /** 手当を除いた基本給（時給制: 時給×正味労働時間 / 月給制: 月給額） */
+  baseAmount: number;
+  /** 手当合計（時給制のみ。月給制では 0） */
+  allowancesTotal: number;
   payType: PayType;
   currentDate: Date;
   master: EmployeeMaster | undefined;
@@ -1235,7 +1332,7 @@ function DeductionRow({ label, amount, hint, faded }: { label: string; amount: n
 }
 
 function ResultCard({
-  grossAmount, payType, currentDate, master, employeeName, prefecture,
+  grossAmount, baseAmount, allowancesTotal, payType, currentDate, master, employeeName, prefecture,
   previousMonth, isLocked, canLock, onLock, onUnlock,
 }: ResultCardProps) {
   const yyyymm = toYearMonth(currentDate.getFullYear(), currentDate.getMonth() + 1);
@@ -1274,6 +1371,11 @@ function ResultCard({
             </span>
             <span className="text-xs text-muted-foreground">(総支給額)</span>
           </div>
+          {payType === "hourly" && allowancesTotal > 0 && (
+            <p className="text-[11px] text-muted-foreground tabular-nums" data-testid="gross-breakdown">
+              基本給 {formatJPY(baseAmount)} ＋ 手当 {formatJPY(allowancesTotal)}
+            </p>
+          )}
         </div>
 
         {/* 2列×2行: 当月/前月 × 支給額/源泉徴収 */}
@@ -1730,6 +1832,13 @@ export function PayrollTab({
     },
   );
 
+  // 手当 State（localStorage 同期）。従業員/月 単位で永続化。
+  const allowancesKey = `allowances_${DEFAULT_TENANT_ID}_${employeeId}_${year}_${month}`;
+  const [allowances, setAllowances] = useKeyedPersistedState<AllowanceItem[]>(
+    allowancesKey,
+    () => [],
+  );
+
   // アクティブな事業所タブ
   const [activeWpId, setActiveWpId] = useState<string>(
     () => (workplaces[DEFAULT_WP_KEY] ? DEFAULT_WP_KEY : Object.keys(workplaces)[0] ?? DEFAULT_WP_KEY),
@@ -2026,13 +2135,19 @@ export function PayrollTab({
     return Math.round(sum);
   }, [hoursByWorkplace, workplaceRates]);
 
+  // 手当合計（時給制の総支給額に加算）
+  const allowancesTotal = useMemo(
+    () => allowances.reduce((s, a) => s + (a.amount || 0), 0),
+    [allowances],
+  );
+
   const monthlyRaw = parseInt(monthlySalaryInput.replace(/[^0-9]/g, ""), 10) || 0;
   // 確定スナップショットの「適用基本給」用: 主たる事業所（既定→先頭）の時給
   const primaryHourlyRate = useMemo(() => {
     const primaryId = workplaces[DEFAULT_WP_KEY] ? DEFAULT_WP_KEY : Object.keys(workplaces)[0];
     return parseInt((workplaceRates[primaryId] ?? "").replace(/[^0-9]/g, ""), 10) || 0;
   }, [workplaceRates, workplaces]);
-  const grossAmount = payType === "monthly" ? monthlyRaw : hourlyGross;
+  const grossAmount = payType === "monthly" ? monthlyRaw : hourlyGross + allowancesTotal;
 
   // 前月給与の取得（PayrollResultDB → なければモックダミー）
   const yyyymm = toYearMonth(year, month);
@@ -2216,11 +2331,19 @@ export function PayrollTab({
           )}
         </div>
 
-        {payType === "hourly" && <AllowancesSection />}
+        {payType === "hourly" && (
+          <AllowancesSection
+            allowances={allowances}
+            onChange={setAllowances}
+            disabled={isLocked}
+          />
+        )}
       </fieldset>
 
       <ResultCard
         grossAmount={grossAmount}
+        baseAmount={payType === "monthly" ? monthlyRaw : hourlyGross}
+        allowancesTotal={payType === "hourly" ? allowancesTotal : 0}
         payType={payType}
         currentDate={currentDate}
         master={master}

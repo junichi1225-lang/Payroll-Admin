@@ -222,6 +222,30 @@ export const DEFAULT_HOURLY_RATES: Record<string, number> = {
   w2: 1300,
 };
 
+// ─────────────────────────────────────────────
+// 手当（支給項目）
+// 時給制シミュレーターで総支給額に加算する手当項目。
+// 通勤手当・役職手当などを従業員/月 単位で localStorage に永続化する。
+// ─────────────────────────────────────────────
+export interface AllowanceItem {
+  id: string;
+  /** 手当の種類（例: 通勤手当・役職手当） */
+  type: string;
+  /** 支給額（円） */
+  amount: number;
+}
+
+/** 手当の種類プリセット（入力補助用のサジェスト候補） */
+export const ALLOWANCE_TYPE_PRESETS = [
+  "通勤手当",
+  "役職手当",
+  "資格手当",
+  "住宅手当",
+  "家族手当",
+  "皆勤手当",
+  "その他手当",
+] as const;
+
 export const NEW_WORKPLACE_COLORS = [
   "text-pink-600 bg-pink-50 border-pink-200",
   "text-emerald-600 bg-emerald-50 border-emerald-200",
