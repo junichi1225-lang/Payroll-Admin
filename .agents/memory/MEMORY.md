@@ -1,0 +1,1 @@
+- [Hourly payroll gross & rate model](payroll-hourly-calc.md) — gross is always Σ(per-workplace rate×hours)+allowances; snapshot 単価 is a weighted-avg blended rate, never a single "primary" workplace rate.

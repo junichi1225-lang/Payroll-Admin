@@ -2142,11 +2142,15 @@ export function PayrollTab({
   );
 
   const monthlyRaw = parseInt(monthlySalaryInput.replace(/[^0-9]/g, ""), 10) || 0;
-  // 確定スナップショットの「適用基本給」用: 主たる事業所（既定→先頭）の時給
-  const primaryHourlyRate = useMemo(() => {
-    const primaryId = workplaces[DEFAULT_WP_KEY] ? DEFAULT_WP_KEY : Object.keys(workplaces)[0];
-    return parseInt((workplaceRates[primaryId] ?? "").replace(/[^0-9]/g, ""), 10) || 0;
-  }, [workplaceRates, workplaces]);
+  // 確定スナップショットの「適用単価」用: 複数事業所の加重平均時給（Σ時給×実働 ÷ Σ実働）。
+  // 「主たる事業所の時給だけで全体を計算する」旧ロジックは廃止。総支給は常に
+  // hourlyGross（職場別小計の合算）を使用し、ここでは単価表示のための代表値のみを算出する。
+  // 単一事業所の場合はその事業所の時給に一致する。
+  const effectiveHourlyRate = useMemo(
+    () => (totalHours > 0 ? Math.round(hourlyGross / totalHours) : 0),
+    [hourlyGross, totalHours],
+  );
+  // 総支給額 = 月給制は固定額 / 時給制は「職場別小計の合算 ＋ 手当」。控除計算(calcDeductions)もこの合算値をベースにする。
   const grossAmount = payType === "monthly" ? monthlyRaw : hourlyGross + allowancesTotal;
 
   // 前月給与の取得（PayrollResultDB → なければモックダミー）
@@ -2207,19 +2211,14 @@ export function PayrollTab({
 
   const master = employeeDB[employeeId];
 
-  // 所属事業所の都道府県を導出（社会保険料率の都道府県別計算用）。
-  // タイムカードに打刻された職場のうち最も労働時間が多い職場を「主たる事業所」とし、
-  // 打刻が無い（月給制等）場合は既定職場 (DEFAULT_WP_KEY) → 任意の職場 の順でフォールバック。
-  // workplaces の prefecture 設定変更 / 月切替 / 打刻内容変更で即時に再評価される。
+  // 社会保険料率の引き当てに使う都道府県を導出（V1ロジック）。
+  // 「主たる事業所」= 当月の正味労働時間が最も長い職場。総支給計算と同じ hoursByWorkplace を
+  // 参照することで、料率引き当てと支給額計算の事業所判定を一致させる。
+  // 打刻が無い（月給制／実働0）場合は UI 先頭の既定職場 (DEFAULT_WP_KEY) → 任意の職場 にフォールバック。
   const primaryPrefecture = useMemo(() => {
-    const totals: Record<string, number> = {};
-    for (const row of timecardRows) {
-      const h = calcHours(row.stdStart, row.stdEnd) - (row.breakMinutes ?? 0) / 60;
-      if (h > 0) totals[row.workplaceId] = (totals[row.workplaceId] ?? 0) + h;
-    }
     let topId: string | null = null;
-    let topHours = -1;
-    for (const [id, h] of Object.entries(totals)) {
+    let topHours = 0;
+    for (const [id, h] of Object.entries(hoursByWorkplace)) {
       if (h > topHours) { topHours = h; topId = id; }
     }
     const wp: WorkplaceDef | undefined =
@@ -2227,7 +2226,7 @@ export function PayrollTab({
       workplaces[DEFAULT_WP_KEY] ??
       Object.values(workplaces)[0];
     return wp?.prefecture ?? "東京都";
-  }, [timecardRows, workplaces]);
+  }, [hoursByWorkplace, workplaces]);
 
   const handleLock = (deductions: DeductionBreakdown) => {
     const result: PayrollResult = {
@@ -2237,7 +2236,7 @@ export function PayrollTab({
       targetYearMonth: yyyymm,
       status: "locked",
       appliedSalaryType: payType === "monthly" ? "月給" : "時給",
-      appliedBaseSalary: payType === "monthly" ? monthlyRaw : primaryHourlyRate,
+      appliedBaseSalary: payType === "monthly" ? monthlyRaw : effectiveHourlyRate,
       totalWorkingHours: payType === "hourly"
         ? Math.round(totalHours * 100) / 100
         : 0,
