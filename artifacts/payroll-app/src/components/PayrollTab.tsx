@@ -242,6 +242,46 @@ function newRowId(): string {
   return `m_${Date.now()}_${manualRowCounter}`;
 }
 
+// 1行が「出勤（実働>0）」かを判定。出勤日数カウントの単一ソース。
+// daysByWorkplace（当月）と prevDaysByWorkplace（前月引き継ぎ）で同じ判定を使う。
+function rowWorked(row: TimecardRow, wp: WorkplaceDef): boolean {
+  const needsInput = row.ocrStatus === "error" || row.ocrStatus === "manual";
+  const editing = needsInput || row.manualEdit;
+  const effectiveStart = editing
+    ? (row.editStart || "--:--")
+    : wp.includeEarlyOvertime ? row.ocrStart : row.stdStart;
+  const effectiveEnd = editing ? (row.editEnd || "--:--") : row.stdEnd;
+  return calcHours(effectiveStart, effectiveEnd) > 0;
+}
+
+// 職場別の出勤日数（実働>0の日をカウント）。日給制の小計・前月引き継ぎに使用。
+function countDaysByWorkplace(
+  rows: TimecardRow[],
+  workplaces: Record<string, WorkplaceDef>,
+): Record<string, number> {
+  const map: Record<string, number> = {};
+  for (const id of Object.keys(workplaces)) map[id] = 0;
+  for (const row of rows) {
+    const wp = workplaces[row.workplaceId];
+    if (!wp) continue;
+    if (rowWorked(row, wp)) map[row.workplaceId] = (map[row.workplaceId] ?? 0) + 1;
+  }
+  return map;
+}
+
+const WEEKDAY_JP = ["日", "月", "火", "水", "木", "金", "土"] as const;
+
+// 前月の打刻行を当月へ引き継ぐ際、表示日付ラベルを当月の同じ日にちへ付け替える。
+// 当月に存在しない日（例: 月末日数差）は当月末日にクランプする。曜日も再計算する。
+function remapRowDate(row: TimecardRow, year: number, month: number): TimecardRow {
+  const m = row.date.match(/(\d+)\/(\d+)/);
+  const dayNum = m ? parseInt(m[2], 10) : 1;
+  const lastDay = new Date(year, month, 0).getDate();
+  const day = Math.min(Math.max(dayNum, 1), lastDay);
+  const wd = new Date(year, month - 1, day).getDay();
+  return { ...row, date: `${month}/${day}（${WEEKDAY_JP[wd]}）`, year, month };
+}
+
 // ─────────────────────────────────────────────
 // 給与体系ピルトグル / 月給入力 / OCRバナー (簡略)
 // ─────────────────────────────────────────────
@@ -960,6 +1000,8 @@ interface WorkplaceRateSectionProps {
   bucketsByWorkplace: Record<string, TimeBuckets>;
   /** 職場ID → 当月の出勤日数（日給制の小計算出用） */
   daysByWorkplace: Record<string, number>;
+  /** 職場ID → 前月の出勤日数（日給制の"出勤日数を引き継ぐ"用） */
+  prevDaysByWorkplace?: Record<string, number>;
   /** 職場ID → 入力中の単価（カンマ区切り文字列） */
   rates: Record<string, string>;
   /** 前月確定時の職場別単価（"前月と同様"用） */
@@ -968,6 +1010,8 @@ interface WorkplaceRateSectionProps {
   onActiveWpChange: (id: string) => void;
   onRateChange: (wpId: string, value: string) => void;
   onCopyPrevRate: (wpId: string) => void;
+  /** 日給制: 前月の出勤日数を当月へ引き継ぐ */
+  onCopyPrevDays?: (wpId: string) => void;
   onAddWorkplace: () => void;
   onEditWorkplace: (wpId: string) => void;
   onBreakMinutesChange: (id: string, mins: number) => void;
@@ -982,8 +1026,8 @@ interface WorkplaceRateSectionProps {
 
 function WorkplaceRateSection({
   mode, workplaces, rows, currentDate, ocrState,
-  bucketsByWorkplace, daysByWorkplace, rates, prevRates, activeWpId, onActiveWpChange,
-  onRateChange, onCopyPrevRate, onAddWorkplace, onEditWorkplace,
+  bucketsByWorkplace, daysByWorkplace, prevDaysByWorkplace, rates, prevRates, activeWpId, onActiveWpChange,
+  onRateChange, onCopyPrevRate, onCopyPrevDays, onAddWorkplace, onEditWorkplace,
   onBreakMinutesChange, onEditTime, onToggleManualEdit, onConfirmDay,
   onRequestAddData, onOpenManual,
 }: WorkplaceRateSectionProps) {
@@ -1002,6 +1046,8 @@ function WorkplaceRateSection({
   const subtotal = isDaily ? rateNum * activeDays : Math.round(rateNum * activeHours);
   const prevRateStr = prevRates[activeWp?.id ?? ""] ?? "";
   const canCopyPrev = prevRateStr.replace(/[^0-9]/g, "").length > 0;
+  const prevDays = prevDaysByWorkplace?.[activeWp?.id ?? ""] ?? 0;
+  const canCopyPrevDays = isDaily && prevDays > 0;
 
   return (
     <div className="space-y-5">
@@ -1096,6 +1142,38 @@ function WorkplaceRateSection({
               </button>
             </div>
           </div>
+
+          {/* 日給制: 前月の出勤日数を引き継ぐ */}
+          {isDaily && (
+            <div className="flex items-center justify-between gap-3 px-4 py-3 rounded-xl border border-border bg-muted/30">
+              <div className="text-xs text-muted-foreground">
+                <span className="font-semibold text-foreground">前月の出勤日数</span>
+                <span className="ml-2 tabular-nums" data-testid={`prev-days-${activeWp.id}`}>
+                  {canCopyPrevDays ? `${prevDays}日` : "データなし"}
+                </span>
+                <p className="mt-0.5 text-[11px] text-muted-foreground/80">
+                  {canCopyPrevDays
+                    ? "前月の出勤実績を当月の打刻として取り込みます（日付は当月に合わせて調整）"
+                    : "前月に出勤データがないため引き継げません。打刻データを追加してください"}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => canCopyPrevDays && onCopyPrevDays?.(activeWp.id)}
+                disabled={!canCopyPrevDays}
+                data-testid={`copy-prev-days-${activeWp.id}`}
+                className={cn(
+                  "flex-shrink-0 px-3 py-2 rounded-xl border text-xs font-semibold transition-colors whitespace-nowrap",
+                  canCopyPrevDays
+                    ? "border-primary/30 text-primary bg-primary/5 hover:bg-primary/10"
+                    : "border-border text-muted-foreground/50 bg-muted/30 cursor-not-allowed",
+                )}
+                title={canCopyPrevDays ? `前月の出勤実績 ${prevDays}日 を引き継ぐ` : "前月の出勤データがありません"}
+              >
+                前月の出勤日数を引き継ぐ
+              </button>
+            </div>
+          )}
 
           {ocrState === "loading" ? (
             <div
@@ -2342,6 +2420,27 @@ export function PayrollTab({
     toast.success("前月の日給を反映しました", { description: `¥${prev}` });
   };
 
+  // 日給制: 前月の出勤実績（実働>0の日）を当月へ引き継ぐ。
+  // 日付ラベルは当月の同じ日にちへ付け替え、行IDは再採番（事業所跨ぎの衝突防止）。
+  // 対象事業所の既存行は OCR/CSV 取り込みと同じく置き換える。
+  const handleCopyPrevDays = (wpId: string) => {
+    const wp = workplaces[wpId];
+    if (!wp) return;
+    const workedRows = prevTimecardRows.filter(
+      (r) => r.workplaceId === wpId && rowWorked(r, wp),
+    );
+    if (workedRows.length === 0) {
+      toast.error("前月の出勤データがありません");
+      return;
+    }
+    const cloned = workedRows.map((r) => ({
+      ...remapRowDate(r, year, month),
+      id: newRowId(),
+    }));
+    setTimecardRows((prev) => [...prev.filter((r) => r.workplaceId !== wpId), ...cloned]);
+    toast.success("前月の出勤日数を引き継ぎました", { description: `${cloned.length}日` });
+  };
+
   const handleEditWorkplace = (wpId: string) => {
     if (!workplaces[wpId]) return;
     setWpDialogMode("edit");
@@ -2525,24 +2624,10 @@ export function PayrollTab({
   }, [bucketsByWorkplace]);
 
   // 職場別の出勤日数（実働>0の日をカウント。日給制の小計算出に使用）
-  const daysByWorkplace = useMemo<Record<string, number>>(() => {
-    const map: Record<string, number> = {};
-    for (const id of Object.keys(workplaces)) map[id] = 0;
-    for (const row of timecardRows) {
-      const wp = workplaces[row.workplaceId];
-      if (!wp) continue;
-      const needsInput = row.ocrStatus === "error" || row.ocrStatus === "manual";
-      const editing = needsInput || row.manualEdit;
-      const effectiveStart = editing
-        ? (row.editStart || "--:--")
-        : wp.includeEarlyOvertime ? row.ocrStart : row.stdStart;
-      const effectiveEnd = editing ? (row.editEnd || "--:--") : row.stdEnd;
-      if (calcHours(effectiveStart, effectiveEnd) > 0) {
-        map[row.workplaceId] = (map[row.workplaceId] ?? 0) + 1;
-      }
-    }
-    return map;
-  }, [timecardRows, workplaces]);
+  const daysByWorkplace = useMemo<Record<string, number>>(
+    () => countDaysByWorkplace(timecardRows, workplaces),
+    [timecardRows, workplaces],
+  );
 
   // 全職場合計の正味労働時間（確定スナップショット用）
   const totalHours = useMemo(
@@ -2647,6 +2732,34 @@ export function PayrollTab({
     }
     return init;
   }, [prevDailyRatesKey, workplaces]);
+
+  // 前月の打刻行（日給制の「出勤日数を引き継ぐ」用）。
+  // 前月を実際に開いて保存された localStorage を優先し、無ければ前月ダミーデータで補完する。
+  // （日給単価が prevDailyRates で既定値に補完されるのと同じ方針で、未訪問月でも引き継げる）
+  const prevTimecardKey = `timecard_${DEFAULT_TENANT_ID}_${employeeId}_${prevDate.getFullYear()}_${prevDate.getMonth() + 1}`;
+  const prevTimecardRows = useMemo<TimecardRow[]>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const raw = window.localStorage.getItem(prevTimecardKey);
+        if (raw) {
+          const parsed = JSON.parse(raw) as TimecardRow[];
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+      } catch {
+        /* フォールバックへ */
+      }
+    }
+    const entries = getTimecardEntries(employeeId, prevDate.getFullYear(), prevDate.getMonth() + 1);
+    return seedRows(entries, workplaces);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prevTimecardKey, employeeId, workplaces]);
+
+  // 前月の職場別出勤日数（引き継ぎ可否の判定・件数表示に使用）
+  const prevDaysByWorkplace = useMemo<Record<string, number>>(
+    () => countDaysByWorkplace(prevTimecardRows, workplaces),
+    [prevTimecardRows, workplaces],
+  );
+
   const prevSnapshot = useMemo(
     () => payrollResultDB.find(
       (p) => p != null && p.employeeId === employeeId && p.targetYearMonth === prevYM,
@@ -2793,12 +2906,14 @@ export function PayrollTab({
               ocrState={ocrState}
               bucketsByWorkplace={bucketsByWorkplace}
               daysByWorkplace={daysByWorkplace}
+              prevDaysByWorkplace={payType === "daily" ? prevDaysByWorkplace : undefined}
               rates={payType === "daily" ? workplaceDailyRates : workplaceRates}
               prevRates={payType === "daily" ? prevDailyRates : prevRates}
               activeWpId={activeWpId}
               onActiveWpChange={setActiveWpId}
               onRateChange={payType === "daily" ? handleDailyRateChange : handleRateChange}
               onCopyPrevRate={payType === "daily" ? handleCopyPrevDailyRate : handleCopyPrevRate}
+              onCopyPrevDays={payType === "daily" ? handleCopyPrevDays : undefined}
               onAddWorkplace={handleAddWorkplaceTab}
               onEditWorkplace={handleEditWorkplace}
               onBreakMinutesChange={handleBreakMinutesChange}
