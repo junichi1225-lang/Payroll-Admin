@@ -44,7 +44,7 @@ import {
   CheckCircle2, AlertCircle, Plus,
   CalendarDays, Moon, Sunrise, MapPin, PencilLine, Pencil,
   Briefcase, Zap, CalendarOff, Share2, Download, Trash2,
-  Camera, FileSpreadsheet, Keyboard, ChevronRight,
+  Camera, FileSpreadsheet, Keyboard, ChevronRight, Lock,
 } from "lucide-react";
 
 // ─────────────────────────────────────────────
@@ -201,6 +201,8 @@ type TimecardRow = TimecardEntry & {
   timeManuallyEdited: boolean;
   /** えんぴつアイコンで打刻の手動上書き編集を開いている状態（永続化対象） */
   manualEdit: boolean;
+  /** 日次確定（この日の打刻を確定し編集をロック）した状態（永続化対象） */
+  isDayConfirmed: boolean;
 };
 
 function entryToRow(entry: TimecardEntry, defaultBreak: number, workplaceId: string): TimecardRow {
@@ -214,6 +216,7 @@ function entryToRow(entry: TimecardEntry, defaultBreak: number, workplaceId: str
     breakMinutes: defaultBreak,
     timeManuallyEdited: false,
     manualEdit: false,
+    isDayConfirmed: false,
   };
 }
 
@@ -629,6 +632,8 @@ interface TimecardTableProps {
   onBreakMinutesChange: (id: string, mins: number) => void;
   onEditTime: (id: string, field: "editStart" | "editEnd", value: string) => void;
   onToggleManualEdit: (id: string) => void;
+  /** 日次確定（この日の打刻を確定/解除） */
+  onConfirmDay: (id: string, confirmed: boolean) => void;
   /** 「打刻データを追加」ボトムシートを開く */
   onRequestAddData: () => void;
   /** エラー行タップで手動入力モーダルを開く */
@@ -637,7 +642,7 @@ interface TimecardTableProps {
 
 function TimecardTable({
   rows, currentDate, workplace,
-  onBreakMinutesChange, onEditTime, onToggleManualEdit, onRequestAddData, onOpenManual,
+  onBreakMinutesChange, onEditTime, onToggleManualEdit, onConfirmDay, onRequestAddData, onOpenManual,
 }: TimecardTableProps) {
   const errorCount = rows.filter(
     (r) => (r.ocrStatus === "error" || r.ocrStatus === "manual") && !(r.editStart && r.editEnd)
@@ -760,9 +765,15 @@ function TimecardTable({
                   : "bg-background hover:bg-muted/20";
 
                 return (
-                  <tr key={row.id} className={cn("transition-colors border-b border-border/40 last:border-b-0", rowBg)}>
+                  <tr key={row.id} className={cn("transition-colors border-b border-border/40 last:border-b-0", rowBg, row.isDayConfirmed && "opacity-80")}>
                     <td className="px-2 py-2.5 text-center">
-                      <CheckCircle2 className="w-4 h-4 text-green-500 mx-auto" />
+                      {row.isDayConfirmed ? (
+                        <Lock className="w-4 h-4 text-green-500 mx-auto" />
+                      ) : row.timeManuallyEdited ? (
+                        <PencilLine className="w-4 h-4 text-yellow-500 mx-auto" />
+                      ) : (
+                        <CheckCircle2 className="w-4 h-4 text-blue-400 mx-auto" />
+                      )}
                     </td>
 
                     {/* 日付 + 休日バッジ */}
@@ -789,12 +800,13 @@ function TimecardTable({
                     {/* 出勤–退勤（OCR読み取り / 手動上書き） */}
                     <td className={cn(
                       "px-2 py-2.5 transition-colors",
-                      row.timeManuallyEdited && "bg-yellow-50/80"
+                      row.timeManuallyEdited ? "bg-yellow-50/80" : "bg-blue-50/60 text-blue-800"
                     )}>
                       {editing ? (
                         <div className="flex items-center gap-1">
                           <input type="time" value={row.editStart}
                             onChange={(e) => onEditTime(row.id, "editStart", e.target.value)}
+                            disabled={row.isDayConfirmed}
                             aria-label="出勤時刻"
                             className={cn(
                               "w-[86px] px-2 py-1.5 rounded-lg border text-xs font-medium",
@@ -807,6 +819,7 @@ function TimecardTable({
                           <span className="text-muted-foreground text-xs">–</span>
                           <input type="time" value={row.editEnd}
                             onChange={(e) => onEditTime(row.id, "editEnd", e.target.value)}
+                            disabled={row.isDayConfirmed}
                             aria-label="退勤時刻"
                             className={cn(
                               "w-[86px] px-2 py-1.5 rounded-lg border text-xs font-medium",
@@ -819,7 +832,10 @@ function TimecardTable({
                         </div>
                       ) : (
                         <div className="flex items-center gap-1.5">
-                          <span className="text-xs font-medium text-foreground tabular-nums">
+                          <span className={cn(
+                            "text-xs font-medium tabular-nums",
+                            row.timeManuallyEdited ? "text-yellow-800" : "text-blue-700"
+                          )}>
                             {effectiveStart} – {effectiveEnd}
                           </span>
                           {row.timeManuallyEdited && (
@@ -841,13 +857,15 @@ function TimecardTable({
                           type="number" min={0} max={240} step={15}
                           value={row.breakMinutes}
                           onChange={(e) => onBreakMinutesChange(row.id, parseInt(e.target.value, 10) || 0)}
+                          disabled={row.isDayConfirmed}
                           aria-label="休憩時間(分)"
                           className={cn(
                             "w-[46px] px-1.5 py-1.5 rounded-lg border text-xs font-medium text-center",
                             "focus:outline-none focus:ring-2 transition-all",
+                            row.isDayConfirmed && "opacity-60 cursor-not-allowed",
                             breakManuallyEdited
                               ? "border-yellow-400 bg-yellow-50 text-yellow-900 focus:ring-yellow-200 focus:border-yellow-500"
-                              : "border-border bg-background focus:ring-primary/20 focus:border-primary/50"
+                              : "border-blue-200 bg-blue-50/40 focus:ring-primary/20 focus:border-primary/50"
                           )}
                           title={breakManuallyEdited ? `${wp.name}の既定値(${wp.defaultRestMinutes}分)から手修正` : undefined}
                         />
@@ -863,21 +881,45 @@ function TimecardTable({
                       }
                     </td>
 
-                    {/* えんぴつ: 手動上書き */}
+                    {/* えんぴつ: 手動上書き / 日次確定 */}
                     <td className="px-1 py-2.5 text-right">
-                      <button
-                        onClick={() => onToggleManualEdit(row.id)}
-                        className={cn(
-                          "inline-flex items-center justify-center w-7 h-7 rounded-lg transition-colors",
-                          row.manualEdit
-                            ? "bg-primary/10 text-primary"
-                            : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                      <div className="flex items-center justify-end gap-1">
+                        {!row.isDayConfirmed && (
+                          <button
+                            onClick={() => onToggleManualEdit(row.id)}
+                            className={cn(
+                              "inline-flex items-center justify-center w-7 h-7 rounded-lg transition-colors",
+                              row.manualEdit
+                                ? "bg-primary/10 text-primary"
+                                : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                            )}
+                            aria-label={row.manualEdit ? "手動上書きを閉じる" : "打刻を手動で上書き"}
+                            title={row.manualEdit ? "手動上書きを閉じる" : "打刻を手動で上書き"}
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
                         )}
-                        aria-label={row.manualEdit ? "手動上書きを閉じる" : "打刻を手動で上書き"}
-                        title={row.manualEdit ? "手動上書きを閉じる" : "打刻を手動で上書き"}
-                      >
-                        <Pencil className="w-3.5 h-3.5" />
-                      </button>
+                        {row.isDayConfirmed ? (
+                          <button
+                            onClick={() => onConfirmDay(row.id, false)}
+                            className="inline-flex items-center gap-1 h-7 px-2 rounded-lg text-green-600 bg-green-50 hover:bg-green-100 transition-colors"
+                            aria-label="確定を解除"
+                            title="確定を解除"
+                          >
+                            <Lock className="w-3.5 h-3.5" />
+                            <span className="text-[10px] font-semibold">確定済</span>
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => onConfirmDay(row.id, true)}
+                            className="inline-flex items-center justify-center w-7 h-7 rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+                            aria-label="この日を確定"
+                            title="この日を確定"
+                          >
+                            <Lock className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -931,6 +973,7 @@ interface WorkplaceRateSectionProps {
   onBreakMinutesChange: (id: string, mins: number) => void;
   onEditTime: (id: string, field: "editStart" | "editEnd", value: string) => void;
   onToggleManualEdit: (id: string) => void;
+  onConfirmDay: (id: string, confirmed: boolean) => void;
   /** 「打刻データを追加」ボトムシートを開く */
   onRequestAddData: () => void;
   /** エラー行タップ等で手動入力モーダルを開く（rowId=対象行） */
@@ -941,7 +984,7 @@ function WorkplaceRateSection({
   mode, workplaces, rows, currentDate, ocrState,
   bucketsByWorkplace, daysByWorkplace, rates, prevRates, activeWpId, onActiveWpChange,
   onRateChange, onCopyPrevRate, onAddWorkplace, onEditWorkplace,
-  onBreakMinutesChange, onEditTime, onToggleManualEdit,
+  onBreakMinutesChange, onEditTime, onToggleManualEdit, onConfirmDay,
   onRequestAddData, onOpenManual,
 }: WorkplaceRateSectionProps) {
   const isDaily = mode === "daily";
@@ -1071,6 +1114,7 @@ function WorkplaceRateSection({
               onBreakMinutesChange={onBreakMinutesChange}
               onEditTime={onEditTime}
               onToggleManualEdit={onToggleManualEdit}
+              onConfirmDay={onConfirmDay}
               onRequestAddData={onRequestAddData}
               onOpenManual={onOpenManual}
             />
@@ -1291,6 +1335,10 @@ interface ResultCardProps {
   canLock: boolean;
   onLock: (deductions: DeductionBreakdown) => void;
   onUnlock: () => void;
+  /** 全日まとめて日次確定ボタン用のタイムカード行 */
+  timecardRows: TimecardRow[];
+  /** 全行を日次確定する */
+  onConfirmAllDays: () => void;
 }
 
 const SHARE_DUMMY_URL = "https://app.payroll-saas.com/dummy-link";
@@ -1384,7 +1432,7 @@ function DeductionRow({ label, amount, hint, faded }: { label: string; amount: n
 
 function ResultCard({
   grossAmount, baseAmount, allowancesTotal, payType, currentDate, master, employeeName, prefecture,
-  previousMonth, isLocked, canLock, onLock, onUnlock,
+  previousMonth, isLocked, canLock, onLock, onUnlock, timecardRows, onConfirmAllDays,
 }: ResultCardProps) {
   const yyyymm = toYearMonth(currentDate.getFullYear(), currentDate.getMonth() + 1);
   // 都道府県/年月/標報/総支給 のいずれかが変わると即時に再計算（リアクティブ更新）
@@ -1558,20 +1606,41 @@ function ResultCard({
             </button>
           </>
         ) : (
-          <button
-            type="button"
-            onClick={() => onLock(deductions)}
-            disabled={!canLock || !hasValue}
-            data-testid="lock-month"
-            className={cn(
-              "w-full px-5 py-3.5 rounded-xl text-base font-bold transition-all",
-              canLock && hasValue
-                ? "bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm hover:shadow"
-                : "bg-muted text-muted-foreground/50 cursor-not-allowed",
-            )}
-          >
-            {monthLabel(currentDate)} の給与を確定
-          </button>
+          <div className="w-full flex flex-col gap-2">
+            {payType !== "monthly" && (() => {
+              const unconfirmed = timecardRows.filter((r) => !r.isDayConfirmed).length;
+              return (
+                <button
+                  type="button"
+                  onClick={onConfirmAllDays}
+                  disabled={unconfirmed === 0}
+                  data-testid="confirm-all-days"
+                  className={cn(
+                    "w-full px-5 py-3 rounded-xl text-sm font-semibold transition-colors border",
+                    unconfirmed > 0
+                      ? "border-primary/30 text-primary bg-primary/5 hover:bg-primary/10"
+                      : "border-border text-muted-foreground/50 bg-muted cursor-not-allowed",
+                  )}
+                >
+                  すべての打刻を確定（{unconfirmed}件）
+                </button>
+              );
+            })()}
+            <button
+              type="button"
+              onClick={() => onLock(deductions)}
+              disabled={!canLock || !hasValue}
+              data-testid="lock-month"
+              className={cn(
+                "w-full px-5 py-3.5 rounded-xl text-base font-bold transition-all",
+                canLock && hasValue
+                  ? "bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm hover:shadow"
+                  : "bg-muted text-muted-foreground/50 cursor-not-allowed",
+              )}
+            >
+              {monthLabel(currentDate)} の給与を確定
+            </button>
+          </div>
         )}
       </div>
     </div>
@@ -2091,6 +2160,18 @@ export function PayrollTab({
     ));
   };
 
+  // 日次確定: 1行の打刻を確定/解除する。確定行は編集ロック。
+  const handleConfirmDay = (id: string, confirmed: boolean) => {
+    setTimecardRows((prev) => prev.map((r) =>
+      r.id === id ? { ...r, isDayConfirmed: confirmed } : r
+    ));
+  };
+
+  // 全日まとめて確定: 全行を日次確定する。
+  const handleConfirmAllDays = () => {
+    setTimecardRows((prev) => prev.map((r) => ({ ...r, isDayConfirmed: true })));
+  };
+
   const handleEditTime = (id: string, field: "editStart" | "editEnd", value: string) => {
     setTimecardRows((prev) => prev.map((r) => {
       if (r.id !== id) return r;
@@ -2172,6 +2253,7 @@ export function PayrollTab({
           breakMinutes,
           timeManuallyEdited: true,
           manualEdit: false,
+          isDayConfirmed: false,
           isRestManuallyEdited: restEdited,
         },
       ]);
@@ -2483,6 +2565,7 @@ export function PayrollTab({
               onBreakMinutesChange={handleBreakMinutesChange}
               onEditTime={handleEditTime}
               onToggleManualEdit={handleToggleManualEdit}
+              onConfirmDay={handleConfirmDay}
               onRequestAddData={() => setInputDrawerOpen(true)}
               onOpenManual={handleOpenManual}
             />
@@ -2510,6 +2593,8 @@ export function PayrollTab({
         canLock={true}
         onLock={handleLock}
         onUnlock={handleUnlock}
+        timecardRows={timecardRows}
+        onConfirmAllDays={handleConfirmAllDays}
       />
 
       <div className="flex items-start gap-2 text-xs text-muted-foreground">

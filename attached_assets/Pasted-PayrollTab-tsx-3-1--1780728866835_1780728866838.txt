@@ -1,0 +1,120 @@
+PayrollTab.tsx のタイムカードテーブルに以下3点を実装してください。
+
+  ---
+
+  ## 1. 自動入力データを青色、修正データを黄色で色分け表示する
+
+  ### 現状
+  - OCR読み取り成功行（ocrStatus === "success"）は色なし（白背景）
+  - 手修正済み行（timeManuallyEdited === true）はセル背景が bg-yellow-50/80
+
+  ### 変更内容
+
+  **TimecardRow 型** に `isDayConfirmed: boolean` を追加する（後述の日次確定で使用）。
+
+  **タイムカードテーブルの success 行の色分けルールを以下に変更する：**
+
+  出勤–退勤のセル（現在 `row.timeManuallyEdited && "bg-yellow-50/80"` の箇所）：
+  - `timeManuallyEdited === false`（OCR自動入力のまま）→ `bg-blue-50/60 text-blue-800` を適用
+  - `timeManuallyEdited === true`（手修正済み）→ `bg-yellow-50/80` を適用（現状維持）
+
+  時刻の表示テキストも同様に色分けする：
+  - 自動入力: `text-blue-700 font-medium`
+  - 手修正済み: `text-yellow-800 font-medium`（現状の手修正バッジはそのまま残す）
+
+  休憩(分)のセルも同様に：
+  - `isRestManuallyEdited === false` → `border-blue-200 bg-blue-50/40`
+  - `isRestManuallyEdited === true` → 現状の黄色スタイル維持
+
+  行の左端ステータスアイコンも変更する：
+  - 自動入力行（timeManuallyEdited === false）: `CheckCircle2` を青色 `text-blue-400`
+  - 手修正行（timeManuallyEdited === true）: `PencilLine` アイコンを黄色 `text-yellow-500` で表示
+  - 日次確定済み行（isDayConfirmed === true）: `Lock` アイコンを緑色 `text-green-500` で表示
+
+  ---
+
+  ## 2. 日次確定ボタンを各行に追加する
+
+  ### TimecardRow 型の変更
+
+  ```ts
+  type TimecardRow = TimecardEntry & {
+    editStart: string;
+    editEnd: string;
+    workplaceId: string;
+    breakMinutes: number;
+    timeManuallyEdited: boolean;
+    manualEdit: boolean;
+    isDayConfirmed: boolean; // 追加
+  };
+  
+  entryToRow 関数で isDayConfirmed: false を初期値として設定する。
+
+  テーブル行への確定ボタン追加
+
+  success 行の右端カラム（現在えんぴつアイコンのある列）を2アイコン構成に変更する：
+
+  1. えんぴつアイコン（既存）: isDayConfirmed === false のときのみ表示する
+  2. 日次確定ボタン:
+    - 未確定（isDayConfirmed === false）時: Lock アイコン（グレー）を表示
+        - クリックで isDayConfirmed = true にセット
+      - aria-label: "この日を確定"
+    - 確定済み（isDayConfirmed === true）時: Lock アイコン（緑）+ 小さく「確定済」テキスト
+        - クリックで isDayConfirmed = false に戻す（確定解除）
+      - aria-label: "確定を解除"
+
+  確定済み行の編集ロック
+
+  isDayConfirmed === true の行は以下をすべて disabled にする：
+  - えんぴつボタン（非表示）
+  - 休憩時間の number input
+  - 時刻の手動上書き入力フィールド
+  - 行全体に opacity-80 を適用して視覚的に確定状態を示す
+  
+  TimecardTable に新しいコールバックを追加
+
+  onConfirmDay: (id: string, confirmed: boolean) => void;
+
+  PayrollTab 本体に handleConfirmDay を実装する：
+  const handleConfirmDay = (id: string, confirmed: boolean) => {
+    setTimecardRows((prev) =>
+      prev.map((r) => r.id === id ? { ...r, isDayConfirmed: confirmed } : r)
+    );
+  };
+  
+  localStorage への永続化は既存の timecardRows の保存ロジックに isDayConfirmed を含めるだけでよい。
+
+  ---
+  3. 月次確定ボタンに「全日まとめて確定」機能を追加する
+  
+  現状
+
+  ResultCard 内の確定ボタンは月全体を一度にロック（PayrollResult を生成）する。
+
+  変更内容
+  
+  ResultCard の確定ボタン（lock-month）の
+  上に、タイムカード行を全日まとめて日次確定するボタンを追加する：
+
+  [ すべての打刻を確定（X日分） ]   ← 新規追加（グレーアウトカラー）
+  [    2026年3月 の給与を確定    ]   ← 既存ボタン（変更なし）
+
+  「すべての打刻を確定」ボタンの仕様：
+  - isDayConfirmed === false の行が1件以上ある場合のみ活性化
+  - クリックで全行の isDayConfirmed = true にセット（handleConfirmDay を全行に適用）
+  - ボタンラベル: すべての打刻を確定（{未確定件数}件）
+  - スタイル: border border-primary/30 text-primary bg-primary/5 hover:bg-primary/10 rounded-xl
+  
+  ResultCard に以下の props を追加する：
+  timecardRows: TimecardRow[];
+  onConfirmAllDays: () => void;
+  
+  PayrollTab 本体に handleConfirmAllDays を実装する：
+  const handleConfirmAllDays = () => {
+    setTimecardRows((prev) => prev.map((r) => ({ ...r, isDayConfirmed: true })));
+  };
+
+  ---
+  変更対象ファイル
+  
+  - artifacts/payroll-app/src/components/PayrollTab.tsx のみ
