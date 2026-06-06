@@ -222,6 +222,12 @@ export const DEFAULT_HOURLY_RATES: Record<string, number> = {
   w2: 1300,
 };
 
+// 事業所ごとの既定日給（モックアップのシード値）。日給制シミュレーターの初期表示に使用。
+export const DEFAULT_DAILY_RATES: Record<string, number> = {
+  w1: 10000,
+  w2: 12000,
+};
+
 // ─────────────────────────────────────────────
 // 手当（支給項目）
 // 時給制シミュレーターで総支給額に加算する手当項目。

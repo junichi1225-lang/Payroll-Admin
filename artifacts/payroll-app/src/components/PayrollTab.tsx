@@ -15,6 +15,7 @@ import {
   EmployeeMaster,
   PayrollResult,
   DEFAULT_HOURLY_RATES,
+  DEFAULT_DAILY_RATES,
   AllowanceItem,
   ALLOWANCE_TYPE_PRESETS,
 } from "@/lib/dummy-data";
@@ -232,12 +233,18 @@ let manualRowCounter = 0;
 // 給与体系ピルトグル / 月給入力 / OCRバナー (簡略)
 // ─────────────────────────────────────────────
 
-type PayType = "monthly" | "hourly";
+type PayType = "monthly" | "daily" | "hourly";
+
+const PAY_TYPE_LABELS: Record<PayType, string> = {
+  monthly: "月給制",
+  daily: "日給制",
+  hourly: "時給制",
+};
 
 function PayTypePills({ value, onChange, disabled }: { value: PayType; onChange: (v: PayType) => void; disabled?: boolean }) {
   return (
     <div className={cn("inline-flex items-center bg-muted rounded-full p-1 gap-1", disabled && "opacity-60")}>
-      {(["monthly", "hourly"] as PayType[]).map((type) => (
+      {(["monthly", "daily", "hourly"] as PayType[]).map((type) => (
         <button key={type} onClick={() => onChange(type)} disabled={disabled}
           className={cn(
             "px-4 py-1.5 rounded-full text-sm font-semibold transition-all duration-200",
@@ -245,7 +252,7 @@ function PayTypePills({ value, onChange, disabled }: { value: PayType; onChange:
             disabled && "cursor-not-allowed",
           )}
         >
-          {type === "monthly" ? "月給制" : "時給制"}
+          {PAY_TYPE_LABELS[type]}
         </button>
       ))}
     </div>
@@ -870,16 +877,20 @@ function bucketNetHours(b: TimeBuckets): number {
   return b.basic + b.overtime + b.earlyOvertime + b.legalHolidayWork + b.scheduledHolidayWork;
 }
 
-interface HourlySectionProps {
+interface WorkplaceRateSectionProps {
+  /** "hourly": 時給 × 正味労働時間 / "daily": 日給 × 出勤日数 */
+  mode: "hourly" | "daily";
   workplaces: Record<string, WorkplaceDef>;
   rows: TimecardRow[];
   currentDate: Date;
   ocrState: OcrState;
   /** 職場ID → 当月の集計バケット */
   bucketsByWorkplace: Record<string, TimeBuckets>;
-  /** 職場ID → 入力中の時給（カンマ区切り文字列） */
+  /** 職場ID → 当月の出勤日数（日給制の小計算出用） */
+  daysByWorkplace: Record<string, number>;
+  /** 職場ID → 入力中の単価（カンマ区切り文字列） */
   rates: Record<string, string>;
-  /** 前月確定時の職場別時給（"前月と同様"用） */
+  /** 前月確定時の職場別単価（"前月と同様"用） */
   prevRates: Record<string, string>;
   activeWpId: string;
   onActiveWpChange: (id: string) => void;
@@ -896,22 +907,26 @@ interface HourlySectionProps {
   onOpenManual: (rowId: string) => void;
 }
 
-function HourlySection({
-  workplaces, rows, currentDate, ocrState,
-  bucketsByWorkplace, rates, prevRates, activeWpId, onActiveWpChange,
+function WorkplaceRateSection({
+  mode, workplaces, rows, currentDate, ocrState,
+  bucketsByWorkplace, daysByWorkplace, rates, prevRates, activeWpId, onActiveWpChange,
   onRateChange, onCopyPrevRate, onAddWorkplace, onEditWorkplace,
   onBreakMinutesChange, onEditTime, onToggleManualEdit,
   onRequestAddData, onOpenManual,
-}: HourlySectionProps) {
+}: WorkplaceRateSectionProps) {
+  const isDaily = mode === "daily";
+  const ratePrefix = isDaily ? "daily-rate" : "hourly-rate";
+  const copyPrefix = isDaily ? "copy-prev-daily-rate" : "copy-prev-rate";
   const wpList = Object.values(workplaces);
   const activeWp = workplaces[activeWpId] ?? wpList[0];
   const activeRows = rows.filter((r) => r.workplaceId === activeWp?.id);
   const activeBuckets = bucketsByWorkplace[activeWp?.id ?? ""] ?? EMPTY_BUCKETS;
   const activeHours = bucketNetHours(activeBuckets);
+  const activeDays = daysByWorkplace[activeWp?.id ?? ""] ?? 0;
   const rateStr = rates[activeWp?.id ?? ""] ?? "";
   const rateNum = parseInt(rateStr.replace(/[^0-9]/g, ""), 10) || 0;
   const hasRate = rateNum > 0;
-  const subtotal = Math.round(rateNum * activeHours);
+  const subtotal = isDaily ? rateNum * activeDays : Math.round(rateNum * activeHours);
   const prevRateStr = prevRates[activeWp?.id ?? ""] ?? "";
   const canCopyPrev = prevRateStr.replace(/[^0-9]/g, "").length > 0;
 
@@ -968,16 +983,20 @@ function HourlySection({
             </button>
           </div>
 
-          {/* 時給入力 + 前月と同様 */}
+          {/* 単価入力 + 前月と同様 */}
           <div className="space-y-1.5">
-            <label className="block text-sm font-semibold text-foreground">{activeWp.name} の基本時給(円)</label>
-            <p className="text-xs text-muted-foreground">社会保険料控除前の基本時給を入力してください</p>
+            <label className="block text-sm font-semibold text-foreground">
+              {activeWp.name} の{isDaily ? "日給" : "基本時給"}(円)
+            </label>
+            <p className="text-xs text-muted-foreground">
+              社会保険料控除前の{isDaily ? "日給" : "基本時給"}を入力してください
+            </p>
             <div className="relative mt-1 flex items-stretch gap-2 max-w-[360px]">
               <div className="relative flex-1">
                 <span className="absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground font-semibold select-none">¥</span>
                 <input
-                  type="text" inputMode="numeric" value={rateStr} placeholder="1,200"
-                  data-testid={`hourly-rate-${activeWp.id}`}
+                  type="text" inputMode="numeric" value={rateStr} placeholder={isDaily ? "10,000" : "1,200"}
+                  data-testid={`${ratePrefix}-${activeWp.id}`}
                   onChange={(e) => { const d = e.target.value.replace(/[^0-9]/g, ""); onRateChange(activeWp.id, toDisplayValue(d)); }}
                   className={cn(
                     "w-full pl-8 pr-4 py-3.5 rounded-xl border bg-background text-foreground text-base font-medium",
@@ -991,14 +1010,14 @@ function HourlySection({
                 type="button"
                 onClick={() => canCopyPrev && onCopyPrevRate(activeWp.id)}
                 disabled={!canCopyPrev}
-                data-testid={`copy-prev-rate-${activeWp.id}`}
+                data-testid={`${copyPrefix}-${activeWp.id}`}
                 className={cn(
                   "flex-shrink-0 px-3 py-2 rounded-xl border text-xs font-semibold transition-colors whitespace-nowrap",
                   canCopyPrev
                     ? "border-primary/30 text-primary bg-primary/5 hover:bg-primary/10"
                     : "border-border text-muted-foreground/50 bg-muted/30 cursor-not-allowed",
                 )}
-                title={canCopyPrev ? `前月の時給 ¥${prevRateStr} を入力` : "前月のデータがありません"}
+                title={canCopyPrev ? `前月の${isDaily ? "日給" : "時給"} ¥${prevRateStr} を入力` : "前月のデータがありません"}
               >
                 前月と同様
               </button>
@@ -1033,7 +1052,9 @@ function HourlySection({
           <div className="flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-primary/5 border border-primary/20">
             <div className="text-xs text-muted-foreground">
               <span className="font-semibold text-foreground">{activeWp.name} 小計</span>
-              <span className="ml-2 tabular-nums">¥{rateStr || "—"} × {activeHours.toFixed(1)}h</span>
+              <span className="ml-2 tabular-nums">
+                ¥{rateStr || "—"} × {isDaily ? `${activeDays}日` : `${activeHours.toFixed(1)}h`}
+              </span>
             </div>
             <span className="text-lg font-bold tabular-nums text-primary" data-testid={`wp-subtotal-${activeWp.id}`}>
               {hasRate ? formatJPY(subtotal) : "¥ —"}
@@ -1363,7 +1384,11 @@ function ResultCard({
         {/* 総支給額 */}
         <div className="space-y-1">
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-            {payType === "monthly" ? "月給制" : "時給制(時給 × 正味労働時間)"}
+            {payType === "monthly"
+              ? "月給制"
+              : payType === "daily"
+                ? "日給制(日給 × 出勤日数)"
+                : "時給制(時給 × 正味労働時間)"}
           </p>
           <div className="flex items-baseline gap-2">
             <span className="text-3xl font-bold tabular-nums tracking-tight text-foreground">
@@ -1371,7 +1396,7 @@ function ResultCard({
             </span>
             <span className="text-xs text-muted-foreground">(総支給額)</span>
           </div>
-          {payType === "hourly" && allowancesTotal > 0 && (
+          {payType !== "monthly" && allowancesTotal > 0 && (
             <p className="text-[11px] text-muted-foreground tabular-nums" data-testid="gross-breakdown">
               基本給 {formatJPY(baseAmount)} ＋ 手当 {formatJPY(allowancesTotal)}
             </p>
@@ -1832,6 +1857,20 @@ export function PayrollTab({
     },
   );
 
+  // 職場別の日給 State（localStorage 同期）。初期値は DEFAULT_DAILY_RATES。
+  const dailyRatesKey = `dailyRates_${DEFAULT_TENANT_ID}_${employeeId}_${year}_${month}`;
+  const [workplaceDailyRates, setWorkplaceDailyRates] = useKeyedPersistedState<Record<string, string>>(
+    dailyRatesKey,
+    () => {
+      const init: Record<string, string> = {};
+      for (const id of Object.keys(workplaces)) {
+        const def = DEFAULT_DAILY_RATES[id];
+        init[id] = def ? toDisplayValue(String(def)) : "";
+      }
+      return init;
+    },
+  );
+
   // 手当 State（localStorage 同期）。従業員/月 単位で永続化。
   const allowancesKey = `allowances_${DEFAULT_TENANT_ID}_${employeeId}_${year}_${month}`;
   const [allowances, setAllowances] = useKeyedPersistedState<AllowanceItem[]>(
@@ -1953,6 +1992,17 @@ export function PayrollTab({
     toast.success("前月の時給を反映しました", { description: `¥${prev}` });
   };
 
+  const handleDailyRateChange = (wpId: string, value: string) => {
+    setWorkplaceDailyRates((prev) => ({ ...prev, [wpId]: value }));
+  };
+
+  const handleCopyPrevDailyRate = (wpId: string) => {
+    const prev = prevDailyRates[wpId];
+    if (!prev) return;
+    setWorkplaceDailyRates((cur) => ({ ...cur, [wpId]: prev }));
+    toast.success("前月の日給を反映しました", { description: `¥${prev}` });
+  };
+
   const handleEditWorkplace = (wpId: string) => {
     if (!workplaces[wpId]) return;
     setWpDialogMode("edit");
@@ -1980,6 +2030,7 @@ export function PayrollTab({
       };
       onAddWorkplace(newKey, newDef);
       setWorkplaceRates((prev) => ({ ...prev, [newKey]: prev[newKey] ?? "" }));
+      setWorkplaceDailyRates((prev) => ({ ...prev, [newKey]: prev[newKey] ?? "" }));
       setActiveWpId(newKey);
       if (wpDialogRowId) {
         setTimecardRows((prev) => prev.map((r) =>
@@ -2119,6 +2170,26 @@ export function PayrollTab({
     return map;
   }, [bucketsByWorkplace]);
 
+  // 職場別の出勤日数（実働>0の日をカウント。日給制の小計算出に使用）
+  const daysByWorkplace = useMemo<Record<string, number>>(() => {
+    const map: Record<string, number> = {};
+    for (const id of Object.keys(workplaces)) map[id] = 0;
+    for (const row of timecardRows) {
+      const wp = workplaces[row.workplaceId];
+      if (!wp) continue;
+      const needsInput = row.ocrStatus === "error" || row.ocrStatus === "manual";
+      const editing = needsInput || row.manualEdit;
+      const effectiveStart = editing
+        ? (row.editStart || "--:--")
+        : wp.includeEarlyOvertime ? row.ocrStart : row.stdStart;
+      const effectiveEnd = editing ? (row.editEnd || "--:--") : row.stdEnd;
+      if (calcHours(effectiveStart, effectiveEnd) > 0) {
+        map[row.workplaceId] = (map[row.workplaceId] ?? 0) + 1;
+      }
+    }
+    return map;
+  }, [timecardRows, workplaces]);
+
   // 全職場合計の正味労働時間（確定スナップショット用）
   const totalHours = useMemo(
     () => Object.values(hoursByWorkplace).reduce((a, b) => a + b, 0),
@@ -2135,6 +2206,16 @@ export function PayrollTab({
     return Math.round(sum);
   }, [hoursByWorkplace, workplaceRates]);
 
+  // 日給制総支給 = Σ（職場別日給 × 職場別出勤日数）
+  const dailyGross = useMemo(() => {
+    let sum = 0;
+    for (const [id, days] of Object.entries(daysByWorkplace)) {
+      const rate = parseInt((workplaceDailyRates[id] ?? "").replace(/[^0-9]/g, ""), 10) || 0;
+      sum += rate * days;
+    }
+    return sum;
+  }, [daysByWorkplace, workplaceDailyRates]);
+
   // 手当合計（時給制の総支給額に加算）
   const allowancesTotal = useMemo(
     () => allowances.reduce((s, a) => s + (a.amount || 0), 0),
@@ -2150,8 +2231,19 @@ export function PayrollTab({
     () => (totalHours > 0 ? Math.round(hourlyGross / totalHours) : 0),
     [hourlyGross, totalHours],
   );
-  // 総支給額 = 月給制は固定額 / 時給制は「職場別小計の合算 ＋ 手当」。控除計算(calcDeductions)もこの合算値をベースにする。
-  const grossAmount = payType === "monthly" ? monthlyRaw : hourlyGross + allowancesTotal;
+  // 確定スナップショットの「適用基本給」用: 主たる事業所（既定→先頭）の日給
+  const primaryDailyRate = useMemo(() => {
+    const primaryId = workplaces[DEFAULT_WP_KEY] ? DEFAULT_WP_KEY : Object.keys(workplaces)[0];
+    return parseInt((workplaceDailyRates[primaryId] ?? "").replace(/[^0-9]/g, ""), 10) || 0;
+  }, [workplaceDailyRates, workplaces]);
+  // 総支給額 = 月給制は固定額 / 日給制は「職場別小計(日給×出勤日数)の合算 ＋ 手当」/
+  // 時給制は「職場別小計の合算 ＋ 手当」。控除計算(calcDeductions)もこの合算値をベースにする。
+  const grossAmount =
+    payType === "monthly"
+      ? monthlyRaw
+      : payType === "daily"
+        ? dailyGross + allowancesTotal
+        : hourlyGross + allowancesTotal;
 
   // 前月給与の取得（PayrollResultDB → なければモックダミー）
   const yyyymm = toYearMonth(year, month);
@@ -2179,6 +2271,28 @@ export function PayrollTab({
     }
     return init;
   }, [prevRatesKey, workplaces]);
+
+  // 前月の職場別日給（"前月と同様"用）。前月の localStorage を参照し、無ければ既定日給。
+  const prevDailyRatesKey = `dailyRates_${DEFAULT_TENANT_ID}_${employeeId}_${prevDate.getFullYear()}_${prevDate.getMonth() + 1}`;
+  const prevDailyRates = useMemo<Record<string, string>>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const raw = window.localStorage.getItem(prevDailyRatesKey);
+        if (raw) {
+          const parsed = JSON.parse(raw) as Record<string, string>;
+          if (parsed && typeof parsed === "object") return parsed;
+        }
+      } catch {
+        /* フォールバックへ */
+      }
+    }
+    const init: Record<string, string> = {};
+    for (const id of Object.keys(workplaces)) {
+      const def = DEFAULT_DAILY_RATES[id];
+      if (def) init[id] = toDisplayValue(String(def));
+    }
+    return init;
+  }, [prevDailyRatesKey, workplaces]);
   const prevSnapshot = useMemo(
     () => payrollResultDB.find(
       (p) => p != null && p.employeeId === employeeId && p.targetYearMonth === prevYM,
@@ -2235,8 +2349,9 @@ export function PayrollTab({
       employeeId,
       targetYearMonth: yyyymm,
       status: "locked",
-      appliedSalaryType: payType === "monthly" ? "月給" : "時給",
-      appliedBaseSalary: payType === "monthly" ? monthlyRaw : effectiveHourlyRate,
+      appliedSalaryType: payType === "monthly" ? "月給" : payType === "daily" ? "日給" : "時給",
+      appliedBaseSalary:
+        payType === "monthly" ? monthlyRaw : payType === "daily" ? primaryDailyRate : effectiveHourlyRate,
       totalWorkingHours: payType === "hourly"
         ? Math.round(totalHours * 100) / 100
         : 0,
@@ -2307,18 +2422,20 @@ export function PayrollTab({
               previousGross={previousMonth.gross}
             />
           ) : (
-            <HourlySection
+            <WorkplaceRateSection
+              mode={payType === "daily" ? "daily" : "hourly"}
               workplaces={workplaces}
               rows={timecardRows}
               currentDate={currentDate}
               ocrState={ocrState}
               bucketsByWorkplace={bucketsByWorkplace}
-              rates={workplaceRates}
-              prevRates={prevRates}
+              daysByWorkplace={daysByWorkplace}
+              rates={payType === "daily" ? workplaceDailyRates : workplaceRates}
+              prevRates={payType === "daily" ? prevDailyRates : prevRates}
               activeWpId={activeWpId}
               onActiveWpChange={setActiveWpId}
-              onRateChange={handleRateChange}
-              onCopyPrevRate={handleCopyPrevRate}
+              onRateChange={payType === "daily" ? handleDailyRateChange : handleRateChange}
+              onCopyPrevRate={payType === "daily" ? handleCopyPrevDailyRate : handleCopyPrevRate}
               onAddWorkplace={handleAddWorkplaceTab}
               onEditWorkplace={handleEditWorkplace}
               onBreakMinutesChange={handleBreakMinutesChange}
@@ -2330,7 +2447,7 @@ export function PayrollTab({
           )}
         </div>
 
-        {payType === "hourly" && (
+        {payType !== "monthly" && (
           <AllowancesSection
             allowances={allowances}
             onChange={setAllowances}
@@ -2341,8 +2458,8 @@ export function PayrollTab({
 
       <ResultCard
         grossAmount={grossAmount}
-        baseAmount={payType === "monthly" ? monthlyRaw : hourlyGross}
-        allowancesTotal={payType === "hourly" ? allowancesTotal : 0}
+        baseAmount={payType === "monthly" ? monthlyRaw : payType === "daily" ? dailyGross : hourlyGross}
+        allowancesTotal={payType !== "monthly" ? allowancesTotal : 0}
         payType={payType}
         currentDate={currentDate}
         master={master}
@@ -2359,7 +2476,7 @@ export function PayrollTab({
         <Info className="w-4 h-4 flex-shrink-0 mt-0.5 text-primary/40" />
         <p>
           本計算は国税庁「給与所得の源泉徴収税額表(月額表)」電算機計算の特例に基づく甲欄・扶養親族0人の簡易計算です。
-          時給制の総支給額は休憩時間を差し引いた正味労働時間と基本時給から算出しています。
+          時給制の総支給額は休憩時間を差し引いた正味労働時間と基本時給から、日給制は出勤日数と日給から算出しています。
           5区分の判定はマスタの所定労働時間・法定/所定休日設定に基づくダミーロジックです。
         </p>
       </div>
@@ -2375,8 +2492,8 @@ export function PayrollTab({
         onSubmit={handleDialogSubmit}
       />
 
-      {/* 打刻データ追加フロー（時給制・編集可能時のみ） */}
-      {payType === "hourly" && !isLocked && (
+      {/* 打刻データ追加フロー（時給制・日給制・編集可能時のみ） */}
+      {payType !== "monthly" && !isLocked && (
         <>
           {/* 隠しファイル入力（OCR画像 / CSV） */}
           <input
