@@ -44,7 +44,7 @@ import {
   CheckCircle2, AlertCircle, Plus,
   CalendarDays, Moon, Sunrise, MapPin, PencilLine, Pencil,
   Briefcase, Zap, CalendarOff, Share2, Download, Trash2,
-  Camera, FileSpreadsheet, Keyboard, ChevronRight, Lock,
+  Camera, FileSpreadsheet, Keyboard, ChevronRight, Lock, FileText,
 } from "lucide-react";
 
 // ─────────────────────────────────────────────
@@ -1333,6 +1333,8 @@ interface ResultCardProps {
   previousMonth: { gross: number; incomeTax: number };
   isLocked: boolean;
   canLock: boolean;
+  /** 本体で算出した控除額（給与確定・サマリー表示に使用） */
+  deductions: DeductionBreakdown;
   onLock: (deductions: DeductionBreakdown) => void;
   onUnlock: () => void;
   /** 全日まとめて日次確定ボタン用のタイムカード行 */
@@ -1344,16 +1346,15 @@ interface ResultCardProps {
 const SHARE_DUMMY_URL = "https://app.payroll-saas.com/dummy-link";
 
 const PAYSLIP_PRINT_ID = "payslip-print-target";
+const TIMECARD_PRINT_ID = "timecard-print-target";
 
-async function downloadPayslipPdf(employeeName: string, currentDate: Date) {
-  const target = typeof document !== "undefined" ? document.getElementById(PAYSLIP_PRINT_ID) : null;
+// 指定要素を html2canvas → jsPDF でA4 PDF化してダウンロードする共通処理。
+async function downloadElementAsPdf(targetId: string, filename: string, notFoundMsg: string) {
+  const target = typeof document !== "undefined" ? document.getElementById(targetId) : null;
   if (!target) {
-    toast.error("給与明細の出力対象が見つかりません");
+    toast.error(notFoundMsg);
     return;
   }
-  const yyyymm = toYearMonth(currentDate.getFullYear(), currentDate.getMonth() + 1);
-  const safeName = (employeeName || "従業員").replace(/[\\/:*?"<>|\s]+/g, "");
-  const filename = `${safeName}_給与明細_${yyyymm}.pdf`;
   try {
     const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
       import("html2canvas-pro"),
@@ -1385,18 +1386,35 @@ async function downloadPayslipPdf(employeeName: string, currentDate: Date) {
     pdf.save(filename);
     toast.success(`${filename} をダウンロードしました`);
   } catch (err) {
-    console.error("[downloadPayslipPdf]", err);
+    console.error("[downloadElementAsPdf]", err);
     toast.error("PDF生成に失敗しました");
   }
 }
 
-async function sharePayslip(employeeName: string, currentDate: Date) {
-  const monthStr = monthLabel(currentDate);
-  const payload = {
-    title: `${monthStr}分 給与明細`,
-    text: `${employeeName}さんの${monthStr}分の給与明細が確定しました。以下のリンクから確認してください。`,
-    url: SHARE_DUMMY_URL,
-  };
+function safeFileName(employeeName: string): string {
+  return (employeeName || "従業員").replace(/[\\/:*?"<>|\s]+/g, "");
+}
+
+async function downloadMonthlyPayslipPdf(employeeName: string, currentDate: Date) {
+  const yyyymm = toYearMonth(currentDate.getFullYear(), currentDate.getMonth() + 1);
+  await downloadElementAsPdf(
+    PAYSLIP_PRINT_ID,
+    `${safeFileName(employeeName)}_給与明細_${yyyymm}.pdf`,
+    "給与明細の出力対象が見つかりません",
+  );
+}
+
+async function downloadTimecardPdf(employeeName: string, currentDate: Date) {
+  const yyyymm = toYearMonth(currentDate.getFullYear(), currentDate.getMonth() + 1);
+  await downloadElementAsPdf(
+    TIMECARD_PRINT_ID,
+    `${safeFileName(employeeName)}_勤怠レポート_${yyyymm}.pdf`,
+    "勤怠レポートの出力対象が見つかりません",
+  );
+}
+
+// Web Share API が使える環境では共有シートを開き、無い環境ではURLをクリップボードへコピーする。
+async function shareViaWebShare(payload: { title: string; text: string; url: string }) {
   try {
     if (typeof navigator !== "undefined" && typeof navigator.share === "function") {
       await navigator.share(payload);
@@ -1405,14 +1423,32 @@ async function sharePayslip(employeeName: string, currentDate: Date) {
     }
     if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(payload.url);
+      toast.success("URLをクリップボードにコピーしました");
+      return;
     }
-    if (typeof window !== "undefined") {
-      window.alert("共有メニューを開きました（ダミーURLをコピーしました）");
-    }
+    toast.error("この環境では共有がサポートされていません");
   } catch (err) {
     if ((err as Error)?.name === "AbortError") return;
     toast.error("共有に失敗しました");
   }
+}
+
+async function shareMonthlyPayslip(employeeName: string, currentDate: Date) {
+  const monthStr = monthLabel(currentDate);
+  await shareViaWebShare({
+    title: `${monthStr}分 給与明細`,
+    text: `${employeeName}さんの${monthStr}分の給与明細です。`,
+    url: SHARE_DUMMY_URL,
+  });
+}
+
+async function shareTimecardReport(employeeName: string, currentDate: Date) {
+  const monthStr = monthLabel(currentDate);
+  await shareViaWebShare({
+    title: `${monthStr}分 勤怠レポート`,
+    text: `${employeeName}さんの${monthStr}分の勤怠レポートです。`,
+    url: SHARE_DUMMY_URL,
+  });
 }
 
 function DeductionRow({ label, amount, hint, faded }: { label: string; amount: number; hint?: string; faded?: boolean }) {
@@ -1432,14 +1468,8 @@ function DeductionRow({ label, amount, hint, faded }: { label: string; amount: n
 
 function ResultCard({
   grossAmount, baseAmount, allowancesTotal, payType, currentDate, master, employeeName, prefecture,
-  previousMonth, isLocked, canLock, onLock, onUnlock, timecardRows, onConfirmAllDays,
+  previousMonth, isLocked, canLock, deductions, onLock, onUnlock, timecardRows, onConfirmAllDays,
 }: ResultCardProps) {
-  const yyyymm = toYearMonth(currentDate.getFullYear(), currentDate.getMonth() + 1);
-  // 都道府県/年月/標報/総支給 のいずれかが変わると即時に再計算（リアクティブ更新）
-  const deductions = useMemo(
-    () => calcDeductions(grossAmount, master, yyyymm, prefecture),
-    [grossAmount, master, yyyymm, prefecture],
-  );
   const hasValue = grossAmount > 0;
   const currentNet = Math.max(0, grossAmount - deductions.total);
   const prevNet = Math.max(0, previousMonth.gross - previousMonth.incomeTax);
@@ -1580,24 +1610,6 @@ function ResultCard({
             </div>
             <button
               type="button"
-              onClick={() => sharePayslip(employeeName, currentDate)}
-              data-testid="share-payslip"
-              className="inline-flex items-center justify-center gap-1.5 px-4 py-3.5 rounded-xl bg-primary text-primary-foreground text-sm font-semibold hover:bg-primary/90 shadow-sm transition-colors"
-            >
-              <Share2 className="w-4 h-4" />
-              給与明細を共有する
-            </button>
-            <button
-              type="button"
-              onClick={() => downloadPayslipPdf(employeeName, currentDate)}
-              data-testid="download-payslip-pdf"
-              className="inline-flex items-center justify-center gap-1.5 px-4 py-3.5 rounded-xl border border-primary/40 text-primary bg-primary/5 text-sm font-semibold hover:bg-primary/10 transition-colors"
-            >
-              <Download className="w-4 h-4" />
-              PDFをダウンロード
-            </button>
-            <button
-              type="button"
               onClick={onUnlock}
               data-testid="unlock-month"
               className="px-4 py-3.5 rounded-xl border border-border text-sm font-semibold text-muted-foreground hover:bg-muted transition-colors"
@@ -1644,6 +1656,224 @@ function ResultCard({
         )}
       </div>
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// 共有モーダル（日次勤怠レポート / 月次給与明細）
+// ─────────────────────────────────────────────
+
+interface ShareModalProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  employeeName: string;
+  currentDate: Date;
+  timecardRows: TimecardRow[];
+  workplaces: Record<string, WorkplaceDef>;
+  grossAmount: number;
+  deductions: DeductionBreakdown;
+  netPay: number;
+  isMonthLocked: boolean;
+}
+
+function ShareModal({
+  open, onOpenChange, employeeName, currentDate, timecardRows, workplaces,
+  grossAmount, deductions, netPay, isMonthLocked,
+}: ShareModalProps) {
+  // 勤怠レポート用の行データ（各行の実効打刻・実働時間を算出）
+  const reportRows = timecardRows.map((row) => {
+    const wp = workplaces[row.workplaceId];
+    // 画面のタイムカード表と同じ判定: error / manual は未入力（要修正）扱い
+    const needsInput = row.ocrStatus === "error" || row.ocrStatus === "manual";
+    const editing = row.manualEdit;
+    const effStart = editing
+      ? (row.editStart || "--:--")
+      : wp?.includeEarlyOvertime ? row.ocrStart : row.stdStart;
+    const effEnd = editing ? (row.editEnd || "--:--") : row.stdEnd;
+    const gross = calcHours(effStart, effEnd);
+    const net = gross > 0 ? Math.max(0, gross - row.breakMinutes / 60) : 0;
+    return {
+      id: row.id,
+      date: row.date,
+      wpName: wp?.name ?? "—",
+      start: effStart,
+      end: effEnd,
+      breakMinutes: row.breakMinutes,
+      net,
+      isError: needsInput,
+      isDayConfirmed: row.isDayConfirmed,
+    };
+  });
+  const totalNet = reportRows.reduce((s, r) => s + (r.isError ? 0 : r.net), 0);
+  const workDays = reportRows.filter((r) => !r.isError && r.net > 0).length;
+  const issuedAt = new Date().toLocaleString("ja-JP");
+  const monthStr = monthLabel(currentDate);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>共有する書類を選択</DialogTitle>
+          <DialogDescription>
+            {employeeName || "従業員"} さんの {monthStr} の書類を共有します
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-3 py-2">
+          {/* ① 日次勤怠レポート */}
+          <div className="rounded-2xl border border-border p-4 space-y-3">
+            <div className="flex items-start gap-3">
+              <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-blue-50 flex-shrink-0">
+                <CalendarDays className="w-5 h-5 text-blue-500" />
+              </div>
+              <div className="min-w-0">
+                <h4 className="text-sm font-bold text-foreground">日次勤怠レポート</h4>
+                <p className="text-xs text-muted-foreground">当月の打刻記録・実働時間の一覧</p>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => downloadTimecardPdf(employeeName, currentDate)}
+                data-testid="share-timecard-pdf"
+                className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border border-border text-xs font-semibold text-foreground hover:bg-muted transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+                PDFで保存
+              </button>
+              <button
+                type="button"
+                onClick={() => shareTimecardReport(employeeName, currentDate)}
+                data-testid="share-timecard"
+                className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 transition-colors"
+              >
+                <Share2 className="w-3.5 h-3.5" />
+                共有する
+              </button>
+            </div>
+          </div>
+
+          {/* ② 月次給与明細 */}
+          <div className="rounded-2xl border border-border p-4 space-y-3">
+            <div className="flex items-start gap-3">
+              <div className="flex items-center justify-center w-10 h-10 rounded-xl bg-green-50 flex-shrink-0">
+                <FileText className="w-5 h-5 text-green-600" />
+              </div>
+              <div className="min-w-0">
+                <h4 className="text-sm font-bold text-foreground">月次給与明細</h4>
+                <p className="text-xs text-muted-foreground">総支給額・控除額・手取り額の明細</p>
+              </div>
+            </div>
+            {!isMonthLocked && (
+              <div className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
+                <AlertCircle className="w-3 h-3" />
+                ※ 給与未確定のため参考値です
+              </div>
+            )}
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => downloadMonthlyPayslipPdf(employeeName, currentDate)}
+                data-testid="share-payslip-pdf"
+                className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border border-border text-xs font-semibold text-foreground hover:bg-muted transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+                PDFで保存
+              </button>
+              <button
+                type="button"
+                onClick={() => shareMonthlyPayslip(employeeName, currentDate)}
+                data-testid="share-payslip"
+                className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 transition-colors"
+              >
+                <Share2 className="w-3.5 h-3.5" />
+                共有する
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter>
+          <DialogClose asChild>
+            <button
+              type="button"
+              className="w-full sm:w-auto px-4 py-2.5 rounded-xl border border-border text-sm font-semibold text-muted-foreground hover:bg-muted transition-colors"
+            >
+              閉じる
+            </button>
+          </DialogClose>
+        </DialogFooter>
+      </DialogContent>
+
+      {/* 日次勤怠レポートの印刷用ターゲット（画面外に配置） */}
+      <div aria-hidden className="fixed left-[-10000px] top-0 pointer-events-none">
+        <div id={TIMECARD_PRINT_ID} className="w-[760px] bg-white text-black p-8" style={{ fontFamily: "sans-serif" }}>
+          <h2 className="text-lg font-bold mb-1">
+            {employeeName || "従業員"} 様　{monthStr} 勤怠レポート
+          </h2>
+          <p className="text-xs text-gray-500 mb-4">
+            総支給額（参考）: {formatJPY(grossAmount)} ／ 控除合計: {formatJPY(deductions.total)} ／ 手取り: {formatJPY(netPay)}
+          </p>
+          <table className="w-full border-collapse text-xs">
+            <thead>
+              <tr className="bg-gray-100">
+                <th className="border border-gray-300 px-2 py-1.5 text-left">日付</th>
+                <th className="border border-gray-300 px-2 py-1.5 text-left">事業所</th>
+                <th className="border border-gray-300 px-2 py-1.5 text-center">出勤</th>
+                <th className="border border-gray-300 px-2 py-1.5 text-center">退勤</th>
+                <th className="border border-gray-300 px-2 py-1.5 text-center">休憩</th>
+                <th className="border border-gray-300 px-2 py-1.5 text-right">実働</th>
+                <th className="border border-gray-300 px-2 py-1.5 text-center">状態</th>
+              </tr>
+            </thead>
+            <tbody>
+              {reportRows.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="border border-gray-300 px-2 py-3 text-center text-gray-400">
+                    打刻データがありません
+                  </td>
+                </tr>
+              ) : (
+                reportRows.map((r) => (
+                  <tr key={r.id}>
+                    <td className="border border-gray-300 px-2 py-1.5">{r.date}</td>
+                    <td className="border border-gray-300 px-2 py-1.5">{r.wpName}</td>
+                    {r.isError ? (
+                      <td colSpan={3} className="border border-gray-300 px-2 py-1.5 text-center text-red-600 font-semibold">
+                        要修正
+                      </td>
+                    ) : (
+                      <>
+                        <td className="border border-gray-300 px-2 py-1.5 text-center">{r.start}</td>
+                        <td className="border border-gray-300 px-2 py-1.5 text-center">{r.end}</td>
+                        <td className="border border-gray-300 px-2 py-1.5 text-center">{r.breakMinutes}分</td>
+                      </>
+                    )}
+                    <td className="border border-gray-300 px-2 py-1.5 text-right">
+                      {r.isError ? "—" : `${r.net.toFixed(1)}h`}
+                    </td>
+                    <td className="border border-gray-300 px-2 py-1.5 text-center">
+                      {r.isDayConfirmed ? (
+                        <span className="text-green-700 font-semibold">確定済</span>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+          <div className="mt-4 text-sm">
+            <p>月間実働合計: <span className="font-bold">{totalNet.toFixed(1)}h</span></p>
+            <p>出勤日数: <span className="font-bold">{workDays}日</span></p>
+          </div>
+          <p className="mt-6 text-[10px] text-gray-400">
+            このレポートは {issuedAt} 時点の情報です。
+          </p>
+        </div>
+      </div>
+    </Dialog>
   );
 }
 
@@ -2499,6 +2729,15 @@ export function PayrollTab({
 
   const isLocked = !!lockedSnapshot;
 
+  // 控除額は ResultCard と ShareModal（月次給与明細）で共有するため本体に引き上げる。
+  const deductions = useMemo(
+    () => calcDeductions(grossAmount, master, yyyymm, primaryPrefecture),
+    [grossAmount, master, yyyymm, primaryPrefecture],
+  );
+  const netPay = Math.max(0, grossAmount - deductions.total);
+
+  const [shareModalOpen, setShareModalOpen] = useState(false);
+
   return (
     <div className="space-y-6 max-w-3xl">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2591,10 +2830,40 @@ export function PayrollTab({
         previousMonth={previousMonth}
         isLocked={!!lockedSnapshot}
         canLock={true}
+        deductions={deductions}
         onLock={handleLock}
         onUnlock={handleUnlock}
         timecardRows={timecardRows}
         onConfirmAllDays={handleConfirmAllDays}
+      />
+
+      {/* 共有ボタン（確定有無にかかわらず常時表示） */}
+      <button
+        type="button"
+        onClick={() => setShareModalOpen(true)}
+        data-testid="open-share-modal"
+        className="w-full inline-flex items-center justify-center gap-2 px-5 py-3.5 rounded-xl border border-primary/30 text-primary bg-primary/5 hover:bg-primary/10 text-sm font-semibold transition-colors"
+      >
+        <Share2 className="w-4 h-4" />
+        従業員に共有する
+        {!isLocked && (
+          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-0.5">
+            未確定
+          </span>
+        )}
+      </button>
+
+      <ShareModal
+        open={shareModalOpen}
+        onOpenChange={setShareModalOpen}
+        employeeName={employeeName}
+        currentDate={currentDate}
+        timecardRows={timecardRows}
+        workplaces={workplaces}
+        grossAmount={grossAmount}
+        deductions={deductions}
+        netPay={netPay}
+        isMonthLocked={isLocked}
       />
 
       <div className="flex items-start gap-2 text-xs text-muted-foreground">
