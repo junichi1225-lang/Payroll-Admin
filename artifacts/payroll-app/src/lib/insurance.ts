@@ -12,19 +12,9 @@
  *   属する月」から介護保険料の徴収が開始される。
  */
 
-// ───────────────────────────────────────────────────────────
-// 料率（2024年度・協会けんぽ全国平均ベースのサンプル値）
-// 実運用では都道府県別・年度別に料率テーブルを差し替える。
-// ───────────────────────────────────────────────────────────
-
-/** 健康保険料率（労使合計） */
-export const HEALTH_INSURANCE_RATE = 0.1000; // 10.00%
-
-/** 介護保険料率（労使合計／第2号被保険者のみ上乗せ） */
-export const NURSING_CARE_INSURANCE_RATE = 0.0160; // 1.60%
-
-/** 労働者負担割合（労使折半） */
-const EMPLOYEE_SHARE = 0.5;
+// 料率は constants/rates.ts の resolveRates() を単一ソースとして参照する
+// （都道府県別・年度別の実効日付テーブル）。このモジュールは介護保険
+// 第2号被保険者の「徴収対象期間」判定（年齢計算）のみを担う。
 
 // ───────────────────────────────────────────────────────────
 // 判定ユーティリティ
@@ -134,77 +124,4 @@ export function isNursingCareInsuranceTarget(
   if (targetStart.getTime() >= exitMonthStart.getTime()) return false;
 
   return true;
-}
-
-// ───────────────────────────────────────────────────────────
-// 健康保険料 計算（介護保険上乗せ対応）
-// ───────────────────────────────────────────────────────────
-
-export interface HealthInsuranceInput {
-  /** 標準報酬月額（円） */
-  standardRemuneration: number;
-  /** 社会保険加入フラグ（従業員マスタ isSocialInsurance） */
-  isSocialInsurance: boolean;
-  /** 生年月日 "YYYY-MM-DD" */
-  birthDate: string;
-  /** 対象年月 "YYYY-MM" */
-  targetYearMonth: string;
-}
-
-export interface HealthInsuranceResult {
-  /** 介護保険第2号被保険者該当か */
-  isNursingCareTarget: boolean;
-  /** 適用料率（労使合計） */
-  appliedRate: number;
-  /** 労使合計の保険料（円） */
-  totalPremium: number;
-  /** 従業員負担額（円・労使折半） */
-  employeePremium: number;
-}
-
-/**
- * 健康保険料（介護保険第2号該当時は上乗せ）を計算する。
- *
- * isSocialInsurance が false の場合は全 0 を返す。
- *
- * @example
- * calculateHealthInsurance({
- *   standardRemuneration: 300_000,
- *   isSocialInsurance: true,
- *   birthDate: "1986-05-02",
- *   targetYearMonth: "2026-05",
- * })
- * // => { isNursingCareTarget: true, appliedRate: 0.116,
- * //      totalPremium: 34_800, employeePremium: 17_400 }
- */
-export function calculateHealthInsurance(
-  input: HealthInsuranceInput,
-): HealthInsuranceResult {
-  if (!input.isSocialInsurance || input.standardRemuneration <= 0) {
-    return {
-      isNursingCareTarget: false,
-      appliedRate: 0,
-      totalPremium: 0,
-      employeePremium: 0,
-    };
-  }
-
-  const isNursingCareTarget = isNursingCareInsuranceTarget(
-    input.birthDate,
-    input.targetYearMonth,
-  );
-
-  const appliedRate =
-    HEALTH_INSURANCE_RATE +
-    (isNursingCareTarget ? NURSING_CARE_INSURANCE_RATE : 0);
-
-  const totalPremium = Math.floor(input.standardRemuneration * appliedRate);
-  const employeePremium = Math.floor(totalPremium * EMPLOYEE_SHARE);
-
-  return {
-    isNursingCareTarget,
-    appliedRate,
-    totalPremium,
-    employeePremium,
-  };
 }

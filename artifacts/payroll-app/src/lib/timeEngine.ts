@@ -136,6 +136,40 @@ export type TimecardRow = TimecardEntry & {
   isDayConfirmed: boolean;
 };
 
+/** タイムカード行の既定職場キー（PayrollTab と共有）。 */
+export const DEFAULT_WP_KEY = "w1";
+
+/** 打刻エントリ1件をタイムカード行へ変換する。行IDは事業所単位で名前空間化する。 */
+export function entryToRow(entry: TimecardEntry, defaultBreak: number, workplaceId: string): TimecardRow {
+  return {
+    ...entry,
+    // 同一打刻データを複数事業所へ取り込んだ際のID衝突を防ぐため事業所IDで名前空間化。
+    id: `${workplaceId}:${entry.id}`,
+    editStart: "", editEnd: "",
+    workplaceId,
+    breakMinutes: defaultBreak,
+    timeManuallyEdited: false,
+    manualEdit: false,
+    isDayConfirmed: false,
+  };
+}
+
+/** シードのダミー打刻を職場ごとに分配（前半→第1職場 / 後半→第2職場）。両タブで共用。 */
+export function seedTimecardRows(
+  entries: TimecardEntry[],
+  workplaces: Record<string, WorkplaceDef>,
+): TimecardRow[] {
+  const ids = Object.keys(workplaces);
+  const primary = workplaces[DEFAULT_WP_KEY] ? DEFAULT_WP_KEY : ids[0];
+  const secondary = ids.find((id) => id !== primary) ?? primary;
+  const half = Math.ceil(entries.length / 2);
+  return entries.map((e, i) => {
+    const wpId = i < half ? primary : secondary;
+    const wp = workplaces[wpId];
+    return entryToRow(e, wp?.defaultRestMinutes ?? 60, wpId ?? DEFAULT_WP_KEY);
+  });
+}
+
 /** 1行が「出勤（実働>0）」かを判定。出勤日数カウントの単一ソース。 */
 export function rowWorked(row: TimecardRow, wp: WorkplaceDef): boolean {
   const needsInput = row.ocrStatus === "error" || row.ocrStatus === "manual";

@@ -572,7 +572,7 @@ export default function Dashboard() {
                           currentDate={currentDate}
                           employees={employees}
                           employeeDB={employeeDB}
-                          contractDB={contractDB}
+                          workplaces={workplaces}
                           payrollResultDB={payrollResultDB}
                           onLockOne={handleLockOne}
                           onUnlockOne={handleUnlockOne}

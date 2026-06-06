@@ -27,6 +27,7 @@ import {
   TimeBuckets,
   TimecardRow,
   EMPTY_BUCKETS,
+  DEFAULT_WP_KEY,
   calcHours,
   getRowDate,
   detectHoliday,
@@ -38,6 +39,8 @@ import {
   computeHourlyGross,
   computeDailyGross,
   totalNetHours,
+  entryToRow,
+  seedTimecardRows,
 } from "@/lib/timeEngine";
 import { useKeyedPersistedState } from "@/lib/usePersistedState";
 import {
@@ -85,8 +88,6 @@ const DOW_JP: Record<DayOfWeek, string> = {
   Thursday: "木", Friday: "金", Saturday: "土",
 };
 
-const DEFAULT_WP_KEY = "w1";
-
 const ROUNDING_LABELS: Record<RoundingType, string> = {
   "1min": "1分単位",
   "15min": "15分単位",
@@ -105,33 +106,8 @@ const HOLIDAY_BADGE_STYLE: Record<HolidayType, string> = {
   scheduled_holiday: "text-orange-700 bg-orange-50 border-orange-200",
 };
 
-function entryToRow(entry: TimecardEntry, defaultBreak: number, workplaceId: string): TimecardRow {
-  return {
-    ...entry,
-    // 行IDは事業所単位で名前空間化する。同一打刻データを複数事業所へ取り込んだ際の
-    // ID衝突（=他事業所の行が巻き添えで編集される）を防ぐため。
-    id: `${workplaceId}:${entry.id}`,
-    editStart: "", editEnd: "",
-    workplaceId,
-    breakMinutes: defaultBreak,
-    timeManuallyEdited: false,
-    manualEdit: false,
-    isDayConfirmed: false,
-  };
-}
-
-/** シードのダミー打刻を職場ごとに分配（前半→第1職場 / 後半→第2職場）してタブ表示を成立させる */
-function seedRows(entries: TimecardEntry[], workplaces: Record<string, WorkplaceDef>): TimecardRow[] {
-  const ids = Object.keys(workplaces);
-  const primary = workplaces[DEFAULT_WP_KEY] ? DEFAULT_WP_KEY : ids[0];
-  const secondary = ids.find((id) => id !== primary) ?? primary;
-  const half = Math.ceil(entries.length / 2);
-  return entries.map((e, i) => {
-    const wpId = i < half ? primary : secondary;
-    const wp = workplaces[wpId];
-    return entryToRow(e, wp?.defaultRestMinutes ?? 60, wpId ?? DEFAULT_WP_KEY);
-  });
-}
+/** シードのダミー打刻を職場ごとに分配する（timeEngine と共有）。 */
+const seedRows = seedTimecardRows;
 
 let manualRowCounter = 0;
 
@@ -140,33 +116,6 @@ let manualRowCounter = 0;
 function newRowId(): string {
   manualRowCounter += 1;
   return `m_${Date.now()}_${manualRowCounter}`;
-}
-
-// 1行が「出勤（実働>0）」かを判定。出勤日数カウントの単一ソース。
-// daysByWorkplace（当月）と prevDaysByWorkplace（前月引き継ぎ）で同じ判定を使う。
-function rowWorked(row: TimecardRow, wp: WorkplaceDef): boolean {
-  const needsInput = row.ocrStatus === "error" || row.ocrStatus === "manual";
-  const editing = needsInput || row.manualEdit;
-  const effectiveStart = editing
-    ? (row.editStart || "--:--")
-    : wp.includeEarlyOvertime ? row.ocrStart : row.stdStart;
-  const effectiveEnd = editing ? (row.editEnd || "--:--") : row.stdEnd;
-  return calcHours(effectiveStart, effectiveEnd) > 0;
-}
-
-// 職場別の出勤日数（実働>0の日をカウント）。日給制の小計・前月引き継ぎに使用。
-function countDaysByWorkplace(
-  rows: TimecardRow[],
-  workplaces: Record<string, WorkplaceDef>,
-): Record<string, number> {
-  const map: Record<string, number> = {};
-  for (const id of Object.keys(workplaces)) map[id] = 0;
-  for (const row of rows) {
-    const wp = workplaces[row.workplaceId];
-    if (!wp) continue;
-    if (rowWorked(row, wp)) map[row.workplaceId] = (map[row.workplaceId] ?? 0) + 1;
-  }
-  return map;
 }
 
 const WEEKDAY_JP = ["日", "月", "火", "水", "木", "金", "土"] as const;
@@ -884,11 +833,6 @@ function TimecardTable({
 // 時給セクション
 // ─────────────────────────────────────────────
 
-/** 5区分バケットから正味労働時間（休憩差引後の実働合計）を算出 */
-function bucketNetHours(b: TimeBuckets): number {
-  return b.basic + b.overtime + b.earlyOvertime + b.legalHolidayWork + b.scheduledHolidayWork;
-}
-
 interface WorkplaceRateSectionProps {
   /** "hourly": 時給 × 正味労働時間 / "daily": 日給 × 出勤日数 */
   mode: "hourly" | "daily";
@@ -1141,10 +1085,19 @@ function AllowancesSection({
   const total = allowances.reduce((s, a) => s + (a.amount || 0), 0);
 
   const addAllowance = () => {
-    onChange([...allowances, { id: newAllowanceId(), type: "", amount: 0 }]);
+    onChange([...allowances, { id: newAllowanceId(), type: "", amount: 0, taxable: defaultTaxableFor("") }]);
   };
   const updateAllowance = (id: string, patch: Partial<AllowanceItem>) => {
-    onChange(allowances.map((a) => (a.id === id ? { ...a, ...patch } : a)));
+    onChange(allowances.map((a) => {
+      if (a.id !== id) return a;
+      const next = { ...a, ...patch };
+      // 種類を変更したら課税/非課税の既定値を追従させる（ユーザーが手動切替後は尊重）。
+      if (patch.type !== undefined && patch.taxable === undefined && !a.taxableTouched) {
+        next.taxable = defaultTaxableFor(patch.type);
+      }
+      if (patch.taxable !== undefined) next.taxableTouched = true;
+      return next;
+    }));
   };
   const removeAllowance = (id: string) => {
     onChange(allowances.filter((a) => a.id !== id));
@@ -1183,7 +1136,7 @@ function AllowancesSection({
                 data-testid="allowance-type-input"
                 className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-border bg-background text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all"
               />
-              <div className="relative w-32 flex-shrink-0">
+              <div className="relative w-28 flex-shrink-0">
                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm select-none">¥</span>
                 <input
                   type="text"
@@ -1199,6 +1152,23 @@ function AllowancesSection({
                   className="w-full pl-7 pr-3 py-2 rounded-lg border border-border bg-background text-sm text-right tabular-nums text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all"
                 />
               </div>
+              <button
+                type="button"
+                onClick={() => updateAllowance(a.id, { taxable: !a.taxable })}
+                disabled={disabled}
+                aria-pressed={!a.taxable}
+                aria-label={a.taxable ? "課税手当（切り替えて非課税にする）" : "非課税手当（切り替えて課税にする）"}
+                title="所得税の課税対象に含めるか切り替えます（通勤手当などは非課税）"
+                data-testid="allowance-taxable-toggle"
+                className={cn(
+                  "flex-shrink-0 w-16 h-9 flex items-center justify-center rounded-lg border text-[11px] font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
+                  a.taxable
+                    ? "border-border text-muted-foreground hover:bg-muted"
+                    : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100",
+                )}
+              >
+                {a.taxable ? "課税" : "非課税"}
+              </button>
               <button
                 type="button"
                 onClick={() => removeAllowance(a.id)}
@@ -1232,64 +1202,6 @@ function AllowancesSection({
       </datalist>
     </div>
   );
-}
-
-// ─────────────────────────────────────────────
-// 計算結果カード
-// ─────────────────────────────────────────────
-
-// ─────────────────────────────────────────────
-// 控除額内訳（モックアップ用の簡易計算）
-// ─────────────────────────────────────────────
-interface DeductionBreakdown {
-  health: number;          // 健康保険料（労使折半後の従業員負担）
-  nursingCare: number;     // 介護保険料（40歳以上のみ）
-  childcare: number;       // こども子育て支援金
-  pension: number;         // 厚生年金保険料
-  labor: number;           // 労働保険（雇用保険・従業員負担）
-  incomeTax: number;       // 所得税（源泉徴収）
-  residentTax: number;     // 住民税
-  total: number;
-  isNursingCareTarget: boolean;
-}
-
-function calcDeductions(
-  grossAmount: number,
-  master: EmployeeMaster | undefined,
-  yyyymm: string,
-  prefecture: string,
-): DeductionBreakdown {
-  // 都道府県×年月の料率マスタを参照（マスタに無ければ全国平均フォールバック）
-  const rates = getInsuranceRateOrFallback(prefecture, yyyymm);
-
-  const enrolled = !!master?.isSocialInsurance && (master?.standardRemuneration ?? 0) > 0;
-  const standardRem = enrolled ? master!.standardRemuneration : 0;
-  const isNursingCareTarget = enrolled && !!master
-    ? isNursingCareInsuranceTarget(master.birthDate, yyyymm)
-    : false;
-
-  // 健康保険(基本部分) — 標準報酬月額 × 都道府県別料率 × 折半
-  const health = enrolled
-    ? Math.floor(standardRem * rates.healthInsuranceRate / 2)
-    : 0;
-  // 介護保険(40歳以上) — 上乗せ分（全国一律料率）
-  const nursingCare = isNursingCareTarget
-    ? Math.floor(standardRem * rates.nursingCareInsuranceRate / 2)
-    : 0;
-  // こども子育て支援金 — 標準報酬 × 0.36% × 折半 (令和8年度導入予定の試算)
-  const childcare = enrolled ? Math.floor(standardRem * 0.0036 / 2) : 0;
-  // 厚生年金 — 都道府県別料率(現状は全国一律18.30%) 労使折半
-  const pension = enrolled ? Math.floor(standardRem * rates.pensionInsuranceRate / 2) : 0;
-  // 雇用保険（労働保険のうち従業員負担分） — 総支給 × 0.6%
-  const labor = grossAmount > 0 ? Math.floor(grossAmount * 0.006) : 0;
-  // 所得税 — 社保控除後の金額をベースに簡易計算
-  const taxableBase = Math.max(0, grossAmount - health - nursingCare - pension - labor);
-  const incomeTax = grossAmount > 0 ? calculateIncomeTax(taxableBase) : 0;
-  // 住民税 — 従業員マスタの residentTax（決定通知書の月額）をそのまま引き当て
-  const residentTax = grossAmount > 0 ? (master?.residentTax ?? 0) : 0;
-
-  const total = health + nursingCare + childcare + pension + labor + incomeTax + residentTax;
-  return { health, nursingCare, childcare, pension, labor, incomeTax, residentTax, total, isNursingCareTarget };
 }
 
 // ─────────────────────────────────────────────
@@ -2124,8 +2036,6 @@ export function PayrollTab({
   currentDate, employeeId, employeeName, workplaces, onAddWorkplace, onUpdateWorkplace,
   employeeDB, payrollResultDB, onLockOne, onUnlockOne,
 }: PayrollTabProps) {
-  const [payType, setPayType] = useState<PayType>("monthly");
-  const [monthlySalaryInput, setMonthlySalaryInput] = useState("");
   const [ocrState, setOcrState] = useState<OcrState>("idle");
 
   // 打刻データ追加フロー
@@ -2180,10 +2090,28 @@ export function PayrollTab({
   );
 
   // 手当 State（localStorage 同期）。従業員/月 単位で永続化。
+  // taxable 未設定の旧データは読込時に normalizeAllowance で補完する。
   const allowancesKey = `allowances_${DEFAULT_TENANT_ID}_${employeeId}_${year}_${month}`;
-  const [allowances, setAllowances] = useKeyedPersistedState<AllowanceItem[]>(
+  const [allowancesRaw, setAllowances] = useKeyedPersistedState<AllowanceItem[]>(
     allowancesKey,
     () => [],
+  );
+  const allowances = useMemo(
+    () => allowancesRaw.map((a) => normalizeAllowance(a)),
+    [allowancesRaw],
+  );
+
+  // 給与形態・月給額も永続化する。給与確定タブが同一入力から総支給を再計算して
+  // シミュレーターと数値を一致させるため（旧実装は useState で永続化されず不一致の原因だった）。
+  const payTypeKey = `payType_${DEFAULT_TENANT_ID}_${employeeId}_${year}_${month}`;
+  const [payType, setPayType] = useKeyedPersistedState<PayType>(
+    payTypeKey,
+    () => "monthly",
+  );
+  const monthlySalaryKey = `monthlySalary_${DEFAULT_TENANT_ID}_${employeeId}_${year}_${month}`;
+  const [monthlySalaryInput, setMonthlySalaryInput] = useKeyedPersistedState<string>(
+    monthlySalaryKey,
+    () => "",
   );
 
   // アクティブな事業所タブ
@@ -2491,37 +2419,17 @@ export function PayrollTab({
     setManualOpen(false);
   };
 
-  // 職場別 5区分集計 (workplaces / timecardRows 変更で再計算)
-  const bucketsByWorkplace = useMemo<Record<string, TimeBuckets>>(() => {
-    const map: Record<string, TimeBuckets> = {};
-    for (const id of Object.keys(workplaces)) map[id] = { ...EMPTY_BUCKETS };
-    for (const row of timecardRows) {
-      const wp = workplaces[row.workplaceId];
-      if (!wp) continue;
-      const needsInput = row.ocrStatus === "error" || row.ocrStatus === "manual";
-      const editing = needsInput || row.manualEdit;
-      const effectiveStart = editing
-        ? (row.editStart || "--:--")
-        : wp.includeEarlyOvertime ? row.ocrStart : row.stdStart;
-      const effectiveEnd = editing ? (row.editEnd || "--:--") : row.stdEnd;
-      const rowDate = getRowDate(row.year, row.date);
-      const holiday = detectHoliday(rowDate, wp);
-      const buckets = calcRowBuckets(
-        effectiveStart, effectiveEnd, row.ocrStart, row.stdStart,
-        row.breakMinutes, wp.includeEarlyOvertime, holiday,
-        wp.applyLateNightPremium !== false,
-      );
-      map[row.workplaceId] = addBuckets(map[row.workplaceId] ?? { ...EMPTY_BUCKETS }, buckets);
-    }
-    return map;
-  }, [timecardRows, workplaces]);
+  // 職場別 5区分集計 (workplaces / timecardRows 変更で再計算)。timeEngine と共用。
+  const bucketsByWorkplace = useMemo<Record<string, TimeBuckets>>(
+    () => computeBucketsByWorkplace(timecardRows, workplaces),
+    [timecardRows, workplaces],
+  );
 
   // 職場別の正味労働時間
-  const hoursByWorkplace = useMemo<Record<string, number>>(() => {
-    const map: Record<string, number> = {};
-    for (const [id, b] of Object.entries(bucketsByWorkplace)) map[id] = bucketNetHours(b);
-    return map;
-  }, [bucketsByWorkplace]);
+  const hoursByWorkplace = useMemo<Record<string, number>>(
+    () => computeHoursByWorkplace(bucketsByWorkplace),
+    [bucketsByWorkplace],
+  );
 
   // 職場別の出勤日数（実働>0の日をカウント。日給制の小計算出に使用）
   const daysByWorkplace = useMemo<Record<string, number>>(
@@ -2531,33 +2439,31 @@ export function PayrollTab({
 
   // 全職場合計の正味労働時間（確定スナップショット用）
   const totalHours = useMemo(
-    () => Object.values(hoursByWorkplace).reduce((a, b) => a + b, 0),
+    () => totalNetHours(hoursByWorkplace),
     [hoursByWorkplace],
   );
 
   // 時給制総支給 = Σ（職場別時給 × 職場別実働時間）
-  const hourlyGross = useMemo(() => {
-    let sum = 0;
-    for (const [id, hours] of Object.entries(hoursByWorkplace)) {
-      const rate = parseInt((workplaceRates[id] ?? "").replace(/[^0-9]/g, ""), 10) || 0;
-      sum += rate * hours;
-    }
-    return Math.round(sum);
-  }, [hoursByWorkplace, workplaceRates]);
+  const hourlyGross = useMemo(
+    () => computeHourlyGross(hoursByWorkplace, workplaceRates),
+    [hoursByWorkplace, workplaceRates],
+  );
 
   // 日給制総支給 = Σ（職場別日給 × 職場別出勤日数）
-  const dailyGross = useMemo(() => {
-    let sum = 0;
-    for (const [id, days] of Object.entries(daysByWorkplace)) {
-      const rate = parseInt((workplaceDailyRates[id] ?? "").replace(/[^0-9]/g, ""), 10) || 0;
-      sum += rate * days;
-    }
-    return sum;
-  }, [daysByWorkplace, workplaceDailyRates]);
+  const dailyGross = useMemo(
+    () => computeDailyGross(daysByWorkplace, workplaceDailyRates),
+    [daysByWorkplace, workplaceDailyRates],
+  );
 
-  // 手当合計（時給制の総支給額に加算）
+  // 手当合計（総支給額に加算）
   const allowancesTotal = useMemo(
     () => allowances.reduce((s, a) => s + (a.amount || 0), 0),
+    [allowances],
+  );
+
+  // 非課税手当合計（所得税の課税ベースから控除する。通勤手当など）
+  const nonTaxableAllowanceTotal = useMemo(
+    () => allowances.reduce((s, a) => s + (a.taxable ? 0 : a.amount || 0), 0),
     [allowances],
   );
 
@@ -2743,11 +2649,26 @@ export function PayrollTab({
   const isLocked = !!lockedSnapshot;
 
   // 控除額は ResultCard と ShareModal（月次給与明細）で共有するため本体に引き上げる。
-  const deductions = useMemo(
-    () => calcDeductions(grossAmount, master, yyyymm, primaryPrefecture),
-    [grossAmount, master, yyyymm, primaryPrefecture],
+  // 給与確定タブと同一の純粋関数 computePayroll を使用し、両タブで数値を一致させる。
+  const computation = useMemo(
+    () => computePayroll({
+      targetYearMonth: yyyymm,
+      prefecture: primaryPrefecture,
+      gross: grossAmount,
+      nonTaxableAllowanceTotal,
+      employee: master
+        ? {
+            isSocialInsurance: master.isSocialInsurance,
+            standardRemuneration: master.standardRemuneration,
+            birthDate: master.birthDate,
+            residentTax: master.residentTax,
+          }
+        : undefined,
+    }),
+    [grossAmount, master, yyyymm, primaryPrefecture, nonTaxableAllowanceTotal],
   );
-  const netPay = Math.max(0, grossAmount - deductions.total);
+  const deductions: DeductionBreakdown = computation.deductions;
+  const netPay = computation.netPay;
 
   const [shareModalOpen, setShareModalOpen] = useState(false);
 

@@ -1,11 +1,11 @@
 import { useMemo } from "react";
 import { Lock, Unlock, ShieldCheck, AlertTriangle, Clock } from "lucide-react";
 import {
-  ContractMaster,
   DEFAULT_TENANT_ID,
   EmployeeMaster,
   EmployeeRecord,
   PayrollResult,
+  WorkplaceDef,
 } from "@/lib/dummy-data";
 import {
   buildPayrollResultId,
@@ -18,7 +18,7 @@ interface PayrollFinalizationTabProps {
   currentDate: Date;
   employees: EmployeeRecord[];
   employeeDB: Record<string, EmployeeMaster>;
-  contractDB: ContractMaster[];
+  workplaces: Record<string, WorkplaceDef>;
   payrollResultDB: PayrollResult[];
   onLockOne: (result: PayrollResult) => void;
   onUnlockOne: (employeeId: string, targetYearMonth: string) => void;
@@ -31,7 +31,7 @@ export function PayrollFinalizationTab({
   currentDate,
   employees,
   employeeDB,
-  contractDB,
+  workplaces,
   payrollResultDB,
   onLockOne,
   onUnlockOne,
@@ -54,10 +54,10 @@ export function PayrollFinalizationTab({
       if (locked) {
         return { emp, isLocked: true as const, snapshot: locked };
       }
-      const live = computeMonthSummary(emp.id, year, month, employeeDB, contractDB);
+      const live = computeMonthSummary(emp.id, year, month, employeeDB, workplaces);
       return { emp, isLocked: false as const, live };
     });
-  }, [employees, employeeDB, contractDB, payrollResultDB, year, month, yyyymm]);
+  }, [employees, employeeDB, workplaces, payrollResultDB, year, month, yyyymm]);
 
   const totals = useMemo(() => {
     return rows.reduce(
@@ -82,7 +82,7 @@ export function PayrollFinalizationTab({
   const lockedCount = rows.length - draftRows.length;
 
   const handleLockRow = (emp: EmployeeRecord) => {
-    const live = computeMonthSummary(emp.id, year, month, employeeDB, contractDB);
+    const live = computeMonthSummary(emp.id, year, month, employeeDB, workplaces);
     const result: PayrollResult = {
       tenantId: DEFAULT_TENANT_ID,
       id: buildPayrollResultId(emp.id, year, month),
@@ -102,7 +102,7 @@ export function PayrollFinalizationTab({
 
   const handleLockAll = () => {
     const newResults: PayrollResult[] = draftRows.map((r) => {
-      const live = computeMonthSummary(r.emp.id, year, month, employeeDB, contractDB);
+      const live = computeMonthSummary(r.emp.id, year, month, employeeDB, workplaces);
       return {
         tenantId: DEFAULT_TENANT_ID,
         id: buildPayrollResultId(r.emp.id, year, month),

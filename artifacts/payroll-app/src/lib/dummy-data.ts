@@ -245,6 +245,11 @@ export interface AllowanceItem {
    * 旧データ（未設定）は読み込み時に種類から既定値で補完する。
    */
   taxable: boolean;
+  /**
+   * ユーザーが課税/非課税を手動で切り替えたか。true の場合は種類変更時に
+   * 既定値で上書きしない（手動設定を尊重する）。
+   */
+  taxableTouched?: boolean;
 }
 
 /** 手当の種類プリセット（入力補助用のサジェスト候補） */
@@ -278,6 +283,9 @@ export function normalizeAllowance(a: Partial<AllowanceItem> & { id: string; typ
     type: a.type,
     amount: a.amount,
     taxable: typeof a.taxable === "boolean" ? a.taxable : defaultTaxableFor(a.type),
+    // 手動切り替えフラグは保持する。種類変更時の既定値上書きを抑止する判定に使うため、
+    // 正規化（毎レンダー実行）で欠落するとユーザーの課税/非課税の手動設定が失われる。
+    ...(a.taxableTouched ? { taxableTouched: true } : {}),
   };
 }
 
