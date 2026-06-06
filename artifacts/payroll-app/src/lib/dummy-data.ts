@@ -239,6 +239,12 @@ export interface AllowanceItem {
   type: string;
   /** 支給額（円） */
   amount: number;
+  /**
+   * 課税対象か。true=課税手当（所得税の課税ベースに含む）、
+   * false=非課税手当（通勤手当など。所得税の課税ベースから除く）。
+   * 旧データ（未設定）は読み込み時に種類から既定値で補完する。
+   */
+  taxable: boolean;
 }
 
 /** 手当の種類プリセット（入力補助用のサジェスト候補） */
@@ -251,6 +257,29 @@ export const ALLOWANCE_TYPE_PRESETS = [
   "皆勤手当",
   "その他手当",
 ] as const;
+
+/** 通勤手当か（種類名で判定）。通勤手当は原則非課税。 */
+export function isCommuteAllowance(type: string): boolean {
+  return type.includes("通勤");
+}
+
+/** 手当の種類から課税/非課税の既定値を返す（通勤手当=非課税・その他=課税）。 */
+export function defaultTaxableFor(type: string): boolean {
+  return !isCommuteAllowance(type);
+}
+
+/**
+ * 手当 1件を正規化する（旧データ migration）。
+ * `taxable` 未設定の旧レコードは種類から既定値を補完する。
+ */
+export function normalizeAllowance(a: Partial<AllowanceItem> & { id: string; type: string; amount: number }): AllowanceItem {
+  return {
+    id: a.id,
+    type: a.type,
+    amount: a.amount,
+    taxable: typeof a.taxable === "boolean" ? a.taxable : defaultTaxableFor(a.type),
+  };
+}
 
 export const NEW_WORKPLACE_COLORS = [
   "text-pink-600 bg-pink-50 border-pink-200",

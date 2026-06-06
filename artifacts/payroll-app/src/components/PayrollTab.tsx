@@ -18,12 +18,27 @@ import {
   DEFAULT_DAILY_RATES,
   AllowanceItem,
   ALLOWANCE_TYPE_PRESETS,
+  defaultTaxableFor,
+  normalizeAllowance,
 } from "@/lib/dummy-data";
-import {
-  isNursingCareInsuranceTarget,
-} from "@/lib/insurance";
 import { buildPayrollResultId, toYearMonth } from "@/lib/payrollCalc";
-import { getInsuranceRateOrFallback } from "@/lib/constants/rates";
+import { computePayroll, DeductionBreakdown } from "@/lib/payroll-core";
+import {
+  TimeBuckets,
+  TimecardRow,
+  EMPTY_BUCKETS,
+  calcHours,
+  getRowDate,
+  detectHoliday,
+  bucketNetHours,
+  rowWorked,
+  countDaysByWorkplace,
+  computeBucketsByWorkplace,
+  computeHoursByWorkplace,
+  computeHourlyGross,
+  computeDailyGross,
+  totalNetHours,
+} from "@/lib/timeEngine";
 import { useKeyedPersistedState } from "@/lib/usePersistedState";
 import {
   Accordion, AccordionItem, AccordionTrigger, AccordionContent,
@@ -60,20 +75,6 @@ function toDisplayValue(digits: string): string {
   return parseInt(digits, 10).toLocaleString("ja-JP");
 }
 
-function toMin(t: string): number {
-  if (!t || t === "--:--") return -1;
-  const [h, m] = t.split(":").map(Number);
-  return h * 60 + m;
-}
-
-function calcHours(start: string, end: string): number {
-  const s = toMin(start);
-  let e = toMin(end);
-  if (s < 0 || e < 0) return 0;
-  if (e <= s) e += 1440; // 日跨ぎ補正
-  return (e - s) / 60;
-}
-
 function monthLabel(date: Date): string {
   return `${date.getFullYear()}年${date.getMonth() + 1}月`;
 }
@@ -102,107 +103,6 @@ const HOLIDAY_BADGE_STYLE: Record<HolidayType, string> = {
   weekday: "text-slate-600 bg-slate-100 border-slate-200",
   legal_holiday: "text-rose-700 bg-rose-50 border-rose-200",
   scheduled_holiday: "text-orange-700 bg-orange-50 border-orange-200",
-};
-
-// rowDate "M/D" + year → Date
-function getRowDate(year: number, dateStr: string): Date {
-  const m = dateStr.match(/^(\d+)\/(\d+)/);
-  if (!m) return new Date(year, 0, 1);
-  return new Date(year, parseInt(m[1], 10) - 1, parseInt(m[2], 10));
-}
-
-function detectHoliday(date: Date, wp: WorkplaceDef): HolidayType {
-  const dow = DOW_LIST[date.getDay()];
-  if (dow === wp.legalHoliday) return "legal_holiday";
-  if (wp.scheduledHoliday.includes(dow)) return "scheduled_holiday";
-  return "weekday";
-}
-
-// 22:00–翌05:00 と [start, end] の重なり(分)
-function calcLateNightMin(start: string, end: string): number {
-  const s = toMin(start);
-  let e = toMin(end);
-  if (s < 0 || e < 0) return 0;
-  if (e <= s) e += 1440;
-  // 22:00–29:00 (1320–1740) を想定。前日帯も拾うため 22:00 までの 0:00–05:00 区間を別途加算。
-  const overnight = Math.max(0, Math.min(e, 1740) - Math.max(s, 1320));
-  const earlyMorning = Math.max(0, Math.min(e, 300) - Math.max(s, 0));
-  return overnight + earlyMorning;
-}
-
-// ─────────────────────────────────────────────
-// 5区分労働時間バケット
-// ─────────────────────────────────────────────
-
-interface TimeBuckets {
-  basic: number;            // 平日所定内
-  overtime: number;         // 1日8h超
-  earlyOvertime: number;    // 朝残業
-  lateNight: number;        // 22:00–05:00
-  legalHolidayWork: number; // 法定休日労働
-  scheduledHolidayWork: number; // 所定休日労働
-}
-
-const EMPTY_BUCKETS: TimeBuckets = {
-  basic: 0, overtime: 0, earlyOvertime: 0, lateNight: 0,
-  legalHolidayWork: 0, scheduledHolidayWork: 0,
-};
-
-function addBuckets(a: TimeBuckets, b: TimeBuckets): TimeBuckets {
-  return {
-    basic: a.basic + b.basic,
-    overtime: a.overtime + b.overtime,
-    earlyOvertime: a.earlyOvertime + b.earlyOvertime,
-    lateNight: a.lateNight + b.lateNight,
-    legalHolidayWork: a.legalHolidayWork + b.legalHolidayWork,
-    scheduledHolidayWork: a.scheduledHolidayWork + b.scheduledHolidayWork,
-  };
-}
-
-function calcRowBuckets(
-  effectiveStart: string, effectiveEnd: string,
-  ocrStart: string, stdStart: string,
-  breakMinutes: number, earlyOvertime: boolean, holiday: HolidayType,
-  applyLateNight: boolean = true,
-): TimeBuckets {
-  const grossMin = (calcHours(effectiveStart, effectiveEnd) * 60) | 0;
-  if (grossMin <= 0) return EMPTY_BUCKETS;
-  const workMin = Math.max(0, grossMin - breakMinutes);
-  const earlyMin = earlyOvertime
-    ? Math.max(0, toMin(stdStart) - toMin(ocrStart))
-    : 0;
-  const lateNightMin = calcLateNightMin(effectiveStart, effectiveEnd);
-
-  const buckets: TimeBuckets = { ...EMPTY_BUCKETS };
-
-  if (holiday === "legal_holiday") {
-    buckets.legalHolidayWork = workMin / 60;
-  } else if (holiday === "scheduled_holiday") {
-    buckets.scheduledHolidayWork = workMin / 60;
-  } else {
-    buckets.earlyOvertime = earlyMin / 60;
-    const remaining = Math.max(0, workMin - earlyMin);
-    buckets.basic = Math.min(8 * 60, remaining) / 60;
-    buckets.overtime = Math.max(0, remaining - 8 * 60) / 60;
-  }
-  buckets.lateNight = applyLateNight ? lateNightMin / 60 : 0;
-  return buckets;
-}
-
-// ─────────────────────────────────────────────
-// タイムカード行型(UI ステート込み)
-// ─────────────────────────────────────────────
-
-type TimecardRow = TimecardEntry & {
-  editStart: string;
-  editEnd: string;
-  workplaceId: string;
-  breakMinutes: number;
-  timeManuallyEdited: boolean;
-  /** えんぴつアイコンで打刻の手動上書き編集を開いている状態（永続化対象） */
-  manualEdit: boolean;
-  /** 日次確定（この日の打刻を確定し編集をロック）した状態（永続化対象） */
-  isDayConfirmed: boolean;
 };
 
 function entryToRow(entry: TimecardEntry, defaultBreak: number, workplaceId: string): TimecardRow {
