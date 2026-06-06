@@ -115,9 +115,56 @@ export function calcRowBuckets(
   return buckets;
 }
 
-/** 5区分バケットから正味労働時間（休憩差引後の実働合計）を算出 */
+/** 5区分バケットから正味労働時間（休憩差引後の実働合計・割増なし）を算出 */
 export function bucketNetHours(b: TimeBuckets): number {
   return b.basic + b.overtime + b.earlyOvertime + b.legalHolidayWork + b.scheduledHolidayWork;
+}
+
+// ───────────────────────────────────────────────────────────
+// 割増率（労働基準法）
+// ───────────────────────────────────────────────────────────
+
+/** 法定の割増率。賃金換算に使用する。 */
+export const PREMIUM_RATES = {
+  /** 所定内・法定内残業（所定超〜法定8h）: 割増義務なし */
+  basic: 1.0,
+  /** 法定外残業（法定8h超）: 1.25 */
+  overtime: 1.25,
+  /** 法定外残業のうち月60時間超の部分: 1.50（中小企業も2023/4〜適用） */
+  overtimeOver60: 1.5,
+  /** 所定休日労働（法定休日でない）: 時間外として扱う 1.25 */
+  scheduledHoliday: 1.25,
+  /** 法定休日労働: 1.35 */
+  legalHoliday: 1.35,
+  /** 深夜（22:00–05:00）: +0.25 加算（基本・残業・休日に上乗せ／排他ではない） */
+  lateNightAdd: 0.25,
+} as const;
+
+/** 月60時間超で割増が1.50になる閾値（法定外残業の月内累計時間）。 */
+export const OVERTIME_OVER60_THRESHOLD = 60;
+
+/**
+ * 5区分バケットを「賃金換算時間（割増込み）」へ変換する。
+ * 時給 × この戻り値 = その職場の総支給額（時給制）。
+ *
+ * - 法定外残業（残業＋朝残業）は月内累計60hまで×1.25、超過分×1.50。
+ *   ※ `buckets` は当月・職場単位の集計済み値である前提（60h判定は職場×月単位）。
+ * - 法定休日 ×1.35 / 所定休日 ×1.25。法定休日労働は時間外60h累計には含めない。
+ * - 深夜は加算（×0.25）。基本・残業・休日いずれの深夜帯にも上乗せされる
+ *   （`lateNight` は全打刻の22:00–05:00重なりを別途集計しているため二重計上にならない）。
+ */
+export function bucketPaidHours(b: TimeBuckets): number {
+  const legalOvertime = b.overtime + b.earlyOvertime; // 法定外残業（月内累計）
+  const over60 = Math.max(0, legalOvertime - OVERTIME_OVER60_THRESHOLD);
+  const upTo60 = legalOvertime - over60;
+  return (
+    b.basic * PREMIUM_RATES.basic +
+    upTo60 * PREMIUM_RATES.overtime +
+    over60 * PREMIUM_RATES.overtimeOver60 +
+    b.scheduledHolidayWork * PREMIUM_RATES.scheduledHoliday +
+    b.legalHolidayWork * PREMIUM_RATES.legalHoliday +
+    b.lateNight * PREMIUM_RATES.lateNightAdd
+  );
 }
 
 // ───────────────────────────────────────────────────────────
@@ -242,19 +289,31 @@ function parseRate(raw: string | undefined): number {
   return parseInt((raw ?? "").replace(/[^0-9]/g, ""), 10) || 0;
 }
 
-/** 時給制総支給 = Σ（職場別時給 × 職場別実働時間）。 */
+/**
+ * 時給制総支給 = Σ（職場別時給 × 職場別「賃金換算時間（割増込み）」）。
+ * 法定外残業1.25/月60h超1.50・法定休日1.35・所定休日1.25・深夜+0.25 を反映する。
+ * 割増判定は `buckets` が当月・職場単位の集計済み値である前提（60h累計は職場×月）。
+ */
 export function computeHourlyGross(
-  hoursByWorkplace: Record<string, number>,
+  bucketsByWorkplace: Record<string, TimeBuckets>,
   rates: Record<string, string>,
 ): number {
   let sum = 0;
-  for (const [id, hours] of Object.entries(hoursByWorkplace)) {
-    sum += parseRate(rates[id]) * hours;
+  for (const [id, buckets] of Object.entries(bucketsByWorkplace)) {
+    sum += parseRate(rates[id]) * bucketPaidHours(buckets);
   }
   return Math.round(sum);
 }
 
-/** 日給制総支給 = Σ（職場別日給 × 職場別出勤日数）。 */
+/**
+ * 日給制総支給 = Σ（職場別日給 × 職場別出勤日数）。
+ *
+ * 【SPEC: 割増の適用範囲】法定外残業・深夜・休日の割増は **時給制のみ** 反映する
+ * （`computeHourlyGross` / `bucketPaidHours`）。日給制・月給制では割増を加算しない。
+ * 理由: 日給・月給から割増の単価（時間給換算）を一意に決められず、本モックの
+ * スコープ外とするため。割増対応が必要になった場合は、所定労働時間からの
+ * 時間給換算を別途定義すること。
+ */
 export function computeDailyGross(
   daysByWorkplace: Record<string, number>,
   rates: Record<string, string>,

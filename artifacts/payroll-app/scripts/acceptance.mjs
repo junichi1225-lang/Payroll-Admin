@@ -38,10 +38,18 @@ const aliasPlugin = {
 };
 
 const entry = `
-import { computePayroll } from "@/lib/payroll-core";
+import { computePayroll, round50sen, floorYen } from "@/lib/payroll-core";
 import { loadEmployeeMonthComputation } from "@/lib/payrollInputs";
+import { bucketPaidHours, computeHourlyGross, EMPTY_BUCKETS } from "@/lib/timeEngine";
+import { resolveRates } from "@/lib/constants/rates";
 globalThis.__computePayroll = computePayroll;
 globalThis.__loadEmployeeMonthComputation = loadEmployeeMonthComputation;
+globalThis.__round50sen = round50sen;
+globalThis.__floorYen = floorYen;
+globalThis.__bucketPaidHours = bucketPaidHours;
+globalThis.__computeHourlyGross = computeHourlyGross;
+globalThis.__EMPTY_BUCKETS = EMPTY_BUCKETS;
+globalThis.__resolveRates = resolveRates;
 `;
 
 const result = await esbuild.build({
@@ -115,6 +123,88 @@ const recomputedTotal = d.socialInsuranceTotal + d.incomeTax + d.residentTax;
 const totalOk = recomputedTotal === d.total;
 console.log(`${totalOk ? "✓" : "✗"} 控除合計整合: ${d.total} === 社保${d.socialInsuranceTotal}+所得税${d.incomeTax}+住民税${d.residentTax}`);
 ok = ok && totalOk && d.isNursingCareTarget === true;
+
+// ───────────────────────────────────────────────────────────
+// A. 割増（時間外・深夜・休日）の賃金換算
+// ───────────────────────────────────────────────────────────
+const bucketPaidHours = globalThis.__bucketPaidHours;
+const computeHourlyGross = globalThis.__computeHourlyGross;
+const EMPTY = globalThis.__EMPTY_BUCKETS;
+const RATE = 1_500;
+function approx(a, b) { return Math.abs(a - b) < 1e-6; }
+
+console.log("\n=== A. 割増（時給1,500円）===");
+const aChecks = [
+  // 法定外残業2h → 1500×1.25×2 = 3750
+  ["法定外残業2h", computeHourlyGross({ w: { ...EMPTY, overtime: 2 } }, { w: String(RATE) }), 3_750],
+  // 上記うち深夜1h重複 → さらに 1500×0.25×1 = 375 加算（合計4125）
+  ["残業2h+深夜1h", computeHourlyGross({ w: { ...EMPTY, overtime: 2, lateNight: 1 } }, { w: String(RATE) }), 4_125],
+  // 法定休日労働8h → 1500×1.35×8 = 16200
+  ["法定休日8h", computeHourlyGross({ w: { ...EMPTY, legalHolidayWork: 8 } }, { w: String(RATE) }), 16_200],
+  // 法定休日8h かつ全時間深夜 → 1500×(1.35+0.25)×8 = 19200
+  ["法定休日8h+深夜8h", computeHourlyGross({ w: { ...EMPTY, legalHolidayWork: 8, lateNight: 8 } }, { w: String(RATE) }), 19_200],
+  // 月60時間超の法定外残業61h → 60×1.25 + 1×1.50 = 76.5h相当 → ×1500 = 114750
+  ["法定外残業61h(60h超)", computeHourlyGross({ w: { ...EMPTY, overtime: 61 } }, { w: String(RATE) }), 114_750],
+  // 所定休日8h → 時間外扱い1.25 → 1500×1.25×8 = 15000
+  ["所定休日8h", computeHourlyGross({ w: { ...EMPTY, scheduledHolidayWork: 8 } }, { w: String(RATE) }), 15_000],
+  // 基本8h → 割増なし → 1500×8 = 12000
+  ["基本8h", computeHourlyGross({ w: { ...EMPTY, basic: 8 } }, { w: String(RATE) }), 12_000],
+];
+for (const [label, got, exp] of aChecks) {
+  const pass = got === exp;
+  ok = ok && pass;
+  console.log(`${pass ? "✓" : "✗"} ${label}: ${got}　(期待 ${exp})`);
+}
+// bucketPaidHours 単体: 残業2h+深夜1h = 2×1.25 + 1×0.25 = 2.75h
+{
+  const got = bucketPaidHours({ ...EMPTY, overtime: 2, lateNight: 1 });
+  const pass = approx(got, 2.75);
+  ok = ok && pass;
+  console.log(`${pass ? "✓" : "✗"} bucketPaidHours(残業2h+深夜1h): ${got}　(期待 2.75)`);
+}
+
+// ───────────────────────────────────────────────────────────
+// C. 端数処理（50銭ルール・円未満切捨）境界値
+// ───────────────────────────────────────────────────────────
+const round50sen = globalThis.__round50sen;
+const floorYen = globalThis.__floorYen;
+console.log("\n=== C. 端数処理 境界値 ===");
+const cChecks = [
+  ["round50sen(100.50)=切捨100", round50sen(100.5), 100],
+  ["round50sen(100.51)=切上101", round50sen(100.51), 101],
+  ["round50sen(100.00)=100", round50sen(100), 100],
+  ["round50sen(0.5)=切捨0", round50sen(0.5), 0],
+  ["floorYen(6674.9)=6674", floorYen(6674.9), 6674],
+  ["floorYen(-5)=0", floorYen(-5), 0],
+];
+for (const [label, got, exp] of cChecks) {
+  const pass = got === exp;
+  ok = ok && pass;
+  console.log(`${pass ? "✓" : "✗"} ${label}: ${got}`);
+}
+
+// ───────────────────────────────────────────────────────────
+// D. effectiveFrom 境界（令和7 / 令和8 の引き当て）
+// ───────────────────────────────────────────────────────────
+const resolveRates = globalThis.__resolveRates;
+console.log("\n=== D. 料率 effectiveFrom 境界 ===");
+const r7 = resolveRates("東京都", "2026-02"); // 令和7
+const r8 = resolveRates("東京都", "2026-04"); // 令和8
+const dChecks = [
+  ["2026-02 東京健保=9.91%", r7.healthInsuranceRate, 0.0991],
+  ["2026-02 介護=1.59%", r7.nursingCareInsuranceRate, 0.0159],
+  ["2026-02 雇用=0.55%", r7.employmentInsuranceEmployeeRate, 0.0055],
+  ["2026-02 支援金=0%(未適用)", r7.childcareSupportRate, 0],
+  ["2026-04 東京健保=9.85%", r8.healthInsuranceRate, 0.0985],
+  ["2026-04 介護=1.62%", r8.nursingCareInsuranceRate, 0.0162],
+  ["2026-04 雇用=0.50%", r8.employmentInsuranceEmployeeRate, 0.0050],
+  ["2026-04 支援金=0.23%", r8.childcareSupportRate, 0.0023],
+];
+for (const [label, got, exp] of dChecks) {
+  const pass = approx(got, exp);
+  ok = ok && pass;
+  console.log(`${pass ? "✓" : "✗"} ${label}: ${got}`);
+}
 
 console.log(ok ? "\nRESULT: PASS ✅" : "\nRESULT: FAIL ❌");
 process.exit(ok ? 0 : 1);

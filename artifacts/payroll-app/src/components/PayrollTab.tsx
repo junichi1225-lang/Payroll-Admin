@@ -2443,10 +2443,10 @@ export function PayrollTab({
     [hoursByWorkplace],
   );
 
-  // 時給制総支給 = Σ（職場別時給 × 職場別実働時間）
+  // 時給制総支給 = Σ（職場別時給 × 職場別「賃金換算時間（割増込み）」）
   const hourlyGross = useMemo(
-    () => computeHourlyGross(hoursByWorkplace, workplaceRates),
-    [hoursByWorkplace, workplaceRates],
+    () => computeHourlyGross(bucketsByWorkplace, workplaceRates),
+    [bucketsByWorkplace, workplaceRates],
   );
 
   // 日給制総支給 = Σ（職場別日給 × 職場別出勤日数）

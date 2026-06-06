@@ -122,7 +122,7 @@ export function loadEmployeeMonthComputation(
   const hoursByWorkplace = computeHoursByWorkplace(bucketsByWorkplace);
   const daysByWorkplace = countDaysByWorkplace(timecardRows, workplaces);
   const totalHours = totalNetHours(hoursByWorkplace);
-  const hourlyGross = computeHourlyGross(hoursByWorkplace, workplaceRates);
+  const hourlyGross = computeHourlyGross(bucketsByWorkplace, workplaceRates);
   const dailyGross = computeDailyGross(daysByWorkplace, workplaceDailyRates);
 
   const allowancesTotal = allowances.reduce((s, a) => s + (a.amount || 0), 0);
