@@ -29,6 +29,15 @@ import {
 
 const COLOR_PALETTE: EmployeeColor[] = ["blue", "green", "rose", "amber", "purple", "teal"];
 
+// 入社日などで使用する「YYYY年MM月DD日」形式の本日日付を返す
+const todayJP = (): string => {
+  const now = new Date();
+  const yyyy = now.getFullYear();
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  return `${yyyy}年${mm}月${dd}日`;
+};
+
 type ColorTokens = {
   border: string;
   bg50: string;

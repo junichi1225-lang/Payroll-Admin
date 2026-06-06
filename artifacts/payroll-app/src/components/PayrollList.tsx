@@ -1,7 +1,7 @@
 import { formatCurrency } from "@/lib/utils";
 import { PayrollRecord } from "@/lib/dummy-data";
 import { Badge } from "@/components/ui/badge";
-import { motion } from "framer-motion";
+import { motion, type Variants } from "framer-motion";
 import { Banknote, FileText, CheckCircle2, AlertCircle } from "lucide-react";
 
 interface PayrollListProps {
@@ -9,7 +9,7 @@ interface PayrollListProps {
   isLoading: boolean;
 }
 
-const container = {
+const container: Variants = {
   hidden: { opacity: 0 },
   show: {
     opacity: 1,
@@ -17,7 +17,7 @@ const container = {
   }
 };
 
-const item = {
+const item: Variants = {
   hidden: { opacity: 0, y: 15 },
   show: { opacity: 1, y: 0, transition: { type: "spring", stiffness: 300, damping: 24 } }
 };
