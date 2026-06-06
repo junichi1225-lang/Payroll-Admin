@@ -1,1 +1,2 @@
 - [Hourly payroll gross & rate model](payroll-hourly-calc.md) — gross is always Σ(per-workplace rate×hours)+allowances; snapshot 単価 is a weighted-avg blended rate, never a single "primary" workplace rate.
+- [Timecard row IDs must be globally unique per workplace](payroll-timecard-row-id.md) — row update/edit handlers match by id only, so any two rows sharing an id cross-mutate; namespace generated ids by workplace and regenerate on workplace move.

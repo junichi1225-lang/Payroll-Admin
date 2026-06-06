@@ -206,6 +206,9 @@ type TimecardRow = TimecardEntry & {
 function entryToRow(entry: TimecardEntry, defaultBreak: number, workplaceId: string): TimecardRow {
   return {
     ...entry,
+    // 行IDは事業所単位で名前空間化する。同一打刻データを複数事業所へ取り込んだ際の
+    // ID衝突（=他事業所の行が巻き添えで編集される）を防ぐため。
+    id: `${workplaceId}:${entry.id}`,
     editStart: "", editEnd: "",
     workplaceId,
     breakMinutes: defaultBreak,
@@ -228,6 +231,13 @@ function seedRows(entries: TimecardEntry[], workplaces: Record<string, Workplace
 }
 
 let manualRowCounter = 0;
+
+// 行ID生成: カウンタはリロードで0に戻る一方で行はlocalStorageに残るため、
+// 時刻を含めて再起動をまたいでも衝突しないIDを発行する。
+function newRowId(): string {
+  manualRowCounter += 1;
+  return `m_${Date.now()}_${manualRowCounter}`;
+}
 
 // ─────────────────────────────────────────────
 // 給与体系ピルトグル / 月給入力 / OCRバナー (簡略)
@@ -315,12 +325,19 @@ type OcrState = "idle" | "loading" | "done";
 interface DataInputDrawerProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onPickOcr: () => void;
-  onPickManual: () => void;
-  onPickCsv: () => void;
+  activeWpId: string;
+  workplaces: Record<string, WorkplaceDef>;
+  onPickOcr: (wpId: string) => void;
+  onPickManual: (wpId: string) => void;
+  onPickCsv: (wpId: string) => void;
 }
 
-function DataInputDrawer({ open, onOpenChange, onPickOcr, onPickManual, onPickCsv }: DataInputDrawerProps) {
+function DataInputDrawer({ open, onOpenChange, activeWpId, workplaces, onPickOcr, onPickManual, onPickCsv }: DataInputDrawerProps) {
+  const wpList = Object.values(workplaces);
+  const [selectedWpId, setSelectedWpId] = useState(activeWpId);
+  useEffect(() => {
+    if (open) setSelectedWpId(workplaces[activeWpId] ? activeWpId : (wpList[0]?.id ?? activeWpId));
+  }, [open, activeWpId, workplaces]);
   const options = [
     {
       key: "ocr",
@@ -328,7 +345,7 @@ function DataInputDrawer({ open, onOpenChange, onPickOcr, onPickManual, onPickCs
       title: "画像から自動入力",
       desc: "タイムカードの写真をAI（OCR）で読み取り",
       style: "bg-primary/10 text-primary",
-      onClick: onPickOcr,
+      onClick: () => onPickOcr(selectedWpId),
       testid: "input-mode-ocr",
     },
     {
@@ -337,7 +354,7 @@ function DataInputDrawer({ open, onOpenChange, onPickOcr, onPickManual, onPickCs
       title: "手動で入力する",
       desc: "事業所・日付・時間を選んで1件ずつ入力",
       style: "bg-amber-100 text-amber-700",
-      onClick: onPickManual,
+      onClick: () => onPickManual(selectedWpId),
       testid: "input-mode-manual",
     },
     {
@@ -346,7 +363,7 @@ function DataInputDrawer({ open, onOpenChange, onPickOcr, onPickManual, onPickCs
       title: "Excel / CSV からインポート",
       desc: "勤怠ファイルを一括で取り込み",
       style: "bg-emerald-100 text-emerald-700",
-      onClick: onPickCsv,
+      onClick: () => onPickCsv(selectedWpId),
       testid: "input-mode-csv",
     },
   ];
@@ -358,6 +375,19 @@ function DataInputDrawer({ open, onOpenChange, onPickOcr, onPickManual, onPickCs
             <DrawerTitle>打刻データを追加</DrawerTitle>
             <DrawerDescription>入力方法を選んでください</DrawerDescription>
           </DrawerHeader>
+          <div className="px-4 pb-3 space-y-1.5">
+            <label className="block text-sm font-semibold text-foreground">取り込み先の事業所</label>
+            <Select value={selectedWpId} onValueChange={setSelectedWpId}>
+              <SelectTrigger data-testid="input-workplace-select" className="w-full">
+                <SelectValue placeholder="事業所を選択" />
+              </SelectTrigger>
+              <SelectContent>
+                {wpList.map((wp) => (
+                  <SelectItem key={wp.id} value={wp.id}>{wp.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <div className="px-4 pb-6 space-y-2.5">
             {options.map(({ key, icon: Icon, title, desc, style, onClick, testid }) => (
               <button
@@ -1828,6 +1858,7 @@ export function PayrollTab({
   const [manualLockDate, setManualLockDate] = useState(false);
   const ocrInputRef = useRef<HTMLInputElement>(null);
   const csvInputRef = useRef<HTMLInputElement>(null);
+  const pendingWpIdRef = useRef<string>("");
   // OCRの遅延コールバックが古い状態を上書きしないようにする実行ID
   const ocrRunIdRef = useRef(0);
 
@@ -1902,14 +1933,16 @@ export function PayrollTab({
   }, [storageKey]);
 
   // ① 画像からOCR: 数秒のローディング後に自動入力。3日・5日は読み取りエラー（要手修正）にする。
-  const handleOcrFile = () => {
+  // targetWpId 指定の事業所にのみ取り込み、他事業所の既存行はそのまま保持する。
+  const handleOcrFile = (targetWpId: string) => {
     const runId = (ocrRunIdRef.current += 1);
     setOcrState("loading");
     setTimeout(() => {
       // 月/従業員が変わった、またはCSV等で別操作が走った場合は古い結果を破棄
       if (ocrRunIdRef.current !== runId) return;
       const entries = getTimecardEntries(employeeId, year, month);
-      const seeded = seedRows(entries, workplaces).map((r) => {
+      const wp = workplaces[targetWpId];
+      const newRows = entries.map((e) => entryToRow(e, wp?.defaultRestMinutes ?? 60, targetWpId)).map((r) => {
         const dm = r.date.match(/^(\d+)\/(\d+)/);
         const day = dm ? parseInt(dm[2], 10) : 0;
         if (day === 3 || day === 5) {
@@ -1922,9 +1955,9 @@ export function PayrollTab({
         }
         return { ...r, ocrStatus: "success" as TimecardOcrStatus };
       });
-      setTimecardRows(seeded);
+      setTimecardRows((prev) => [...prev.filter((r) => r.workplaceId !== targetWpId), ...newRows]);
       setOcrState("done");
-      const errs = seeded.filter((r) => r.ocrStatus === "error").length;
+      const errs = newRows.filter((r) => r.ocrStatus === "error").length;
       if (errs > 0) {
         toast.error(`${errs}件の打刻が読み取れませんでした`, { description: "赤色の行をタップして手修正してください" });
       } else {
@@ -1934,25 +1967,32 @@ export function PayrollTab({
   };
 
   // ③ Excel / CSV インポート: 全行を取り込み済みにしてトーストで件数を表示。
-  const handleCsvFile = () => {
+  // targetWpId 指定の事業所にのみ取り込み、他事業所の既存行はそのまま保持する。
+  const handleCsvFile = (targetWpId: string) => {
     // 進行中のOCR遅延コールバックを無効化（インポート結果の上書きを防ぐ）
     ocrRunIdRef.current += 1;
     const entries = getTimecardEntries(employeeId, year, month);
-    const seeded = seedRows(entries, workplaces).map((r) => ({ ...r, ocrStatus: "success" as TimecardOcrStatus }));
-    setTimecardRows(seeded);
+    const wp = workplaces[targetWpId];
+    const newRows = entries.map((e) => ({
+      ...entryToRow(e, wp?.defaultRestMinutes ?? 60, targetWpId),
+      ocrStatus: "success" as TimecardOcrStatus,
+    }));
+    setTimecardRows((prev) => [...prev.filter((r) => r.workplaceId !== targetWpId), ...newRows]);
     setOcrState("done");
-    toast.success(`${seeded.length}件のデータをインポートしました`);
+    toast.success(`${newRows.length}件のデータをインポートしました`);
   };
 
-  // ボトムシートの各モード
-  const handlePickOcr = () => { setInputDrawerOpen(false); ocrInputRef.current?.click(); };
-  const handlePickCsv = () => { setInputDrawerOpen(false); csvInputRef.current?.click(); };
-  const handlePickManual = () => { handleOpenManual(null); };
+  // ボトムシートの各モード（取り込み先事業所 wpId を引き継ぐ）
+  const handlePickOcr = (wpId: string) => { pendingWpIdRef.current = wpId; setInputDrawerOpen(false); ocrInputRef.current?.click(); };
+  const handlePickCsv = (wpId: string) => { pendingWpIdRef.current = wpId; setInputDrawerOpen(false); csvInputRef.current?.click(); };
+  const handlePickManual = (wpId: string) => { handleOpenManual(null, wpId); };
 
   // ② 手動入力モーダルを開く。rowId 指定時はエラー行の修正（対象日固定）。
-  const handleOpenManual = (rowId: string | null) => {
+  // 新規入力時は initialWpId（指定がなければアクティブ事業所）を初期事業所にする。
+  const handleOpenManual = (rowId: string | null, initialWpId?: string) => {
     setInputDrawerOpen(false);
-    const activeWp = workplaces[activeWpId] ?? workplaces[DEFAULT_WP_KEY] ?? Object.values(workplaces)[0];
+    const fallbackWp = workplaces[activeWpId] ?? workplaces[DEFAULT_WP_KEY] ?? Object.values(workplaces)[0];
+    const startWp = (initialWpId && workplaces[initialWpId]) ? workplaces[initialWpId] : fallbackWp;
     if (rowId) {
       const row = timecardRows.find((r) => r.id === rowId);
       if (!row) return;
@@ -1963,10 +2003,10 @@ export function PayrollTab({
     } else {
       setManualDraft({
         rowId: null,
-        workplaceId: activeWp?.id ?? DEFAULT_WP_KEY,
+        workplaceId: startWp?.id ?? DEFAULT_WP_KEY,
         day: currentDate.getDate(),
         start: "", end: "",
-        breakMinutes: activeWp?.defaultRestMinutes ?? 60,
+        breakMinutes: startWp?.defaultRestMinutes ?? 60,
       });
       setManualLockDate(false);
     }
@@ -2099,6 +2139,9 @@ export function PayrollTab({
         r.id === rowId
           ? {
               ...r,
+              // 事業所を変更した場合はIDを再発行し、元事業所の再取り込み(同一entry.idの再生成)
+              // との衝突を防ぐ。
+              id: r.workplaceId !== resolvedWpId ? newRowId() : r.id,
               workplaceId: resolvedWpId,
               breakMinutes,
               isRestManuallyEdited: restEdited || r.isRestManuallyEdited,
@@ -2113,14 +2156,13 @@ export function PayrollTab({
       ));
       toast.success("打刻を修正しました");
     } else {
-      manualRowCounter += 1;
       const dt = new Date(year, month - 1, day);
       const dateLabel = `${month}/${day}（${DOW_JP[DOW_LIST[dt.getDay()]]}）`;
       setTimecardRows((prev) => [
         ...prev,
         {
           tenantId: DEFAULT_TENANT_ID,
-          id: `m${manualRowCounter}`,
+          id: newRowId(),
           date: dateLabel,
           year, month,
           ocrStatus: "success",
@@ -2496,11 +2538,11 @@ export function PayrollTab({
           {/* 隠しファイル入力（OCR画像 / CSV） */}
           <input
             ref={ocrInputRef} type="file" accept="image/*" className="hidden"
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleOcrFile(); e.target.value = ""; }}
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleOcrFile(pendingWpIdRef.current || activeWpId); e.target.value = ""; }}
           />
           <input
             ref={csvInputRef} type="file" accept=".csv,.xls,.xlsx,text/csv" className="hidden"
-            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleCsvFile(); e.target.value = ""; }}
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) handleCsvFile(pendingWpIdRef.current || activeWpId); e.target.value = ""; }}
           />
 
           {/* FAB */}
@@ -2517,6 +2559,8 @@ export function PayrollTab({
           <DataInputDrawer
             open={inputDrawerOpen}
             onOpenChange={setInputDrawerOpen}
+            activeWpId={activeWpId}
+            workplaces={workplaces}
             onPickOcr={handlePickOcr}
             onPickManual={handlePickManual}
             onPickCsv={handlePickCsv}
