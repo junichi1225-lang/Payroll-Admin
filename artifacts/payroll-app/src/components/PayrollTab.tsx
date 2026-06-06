@@ -1396,7 +1396,7 @@ function ResultCard({
             </span>
             <span className="text-xs text-muted-foreground">(総支給額)</span>
           </div>
-          {payType !== "monthly" && allowancesTotal > 0 && (
+          {allowancesTotal > 0 && (
             <p className="text-[11px] text-muted-foreground tabular-nums" data-testid="gross-breakdown">
               基本給 {formatJPY(baseAmount)} ＋ 手当 {formatJPY(allowancesTotal)}
             </p>
@@ -2240,7 +2240,7 @@ export function PayrollTab({
   // 時給制は「職場別小計の合算 ＋ 手当」。控除計算(calcDeductions)もこの合算値をベースにする。
   const grossAmount =
     payType === "monthly"
-      ? monthlyRaw
+      ? monthlyRaw + allowancesTotal
       : payType === "daily"
         ? dailyGross + allowancesTotal
         : hourlyGross + allowancesTotal;
@@ -2447,19 +2447,17 @@ export function PayrollTab({
           )}
         </div>
 
-        {payType !== "monthly" && (
-          <AllowancesSection
-            allowances={allowances}
-            onChange={setAllowances}
-            disabled={isLocked}
-          />
-        )}
+        <AllowancesSection
+          allowances={allowances}
+          onChange={setAllowances}
+          disabled={isLocked}
+        />
       </fieldset>
 
       <ResultCard
         grossAmount={grossAmount}
         baseAmount={payType === "monthly" ? monthlyRaw : payType === "daily" ? dailyGross : hourlyGross}
-        allowancesTotal={payType !== "monthly" ? allowancesTotal : 0}
+        allowancesTotal={allowancesTotal}
         payType={payType}
         currentDate={currentDate}
         master={master}
