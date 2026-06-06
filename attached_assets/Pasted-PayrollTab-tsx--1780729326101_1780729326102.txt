@@ -1,0 +1,142 @@
+PayrollTab.tsx に「日次勤怠レポート」と「月次給与明細」の両方を
+  従業員に共有できる機能を実装してください。
+
+  ---
+  
+  ## 全体設計
+
+  「共有する」ボタンを押すと、共有内容を選択するモーダルが開く。
+  モーダル内で「日次勤怠レポート」か「月次給与明細」かを選び、
+  それぞれPDFダウンロードまたはWeb Share APIで共有できる。
+
+  ---
+
+  ## 1. 共有モーダル（ShareModal）の新規作成
+
+  shadcn の Dialog を使って `ShareModal` コンポーネントを PayrollTab.tsx 内に追加する。
+
+  ### Props
+  
+  ```ts
+  interface ShareModalProps {
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+    employeeName: string;
+    currentDate: Date;
+    timecardRows: TimecardRow[];
+    workplaces: Record<string, WorkplaceDef>;
+    grossAmount: number;
+    deductions: DeductionBreakdown;
+    netPay: number;
+    isMonthLocked: boolean;
+  }
+  
+  モーダルの構成
+
+  ヘッダー: 「共有する書類を選択」
+  
+  タブ or 2つのカードで選択できるようにする：
+
+  ① 日次勤怠レポート
+  - アイコン: CalendarDays（青）
+  - 説明: 「当月の打刻記録・実働時間の一覧」
+  - ボタン: 「PDFで保存」「共有する」
+
+  ② 月次給与明細
+  - アイコン: FileText（緑）
+  - 説明: 「総支給額・控除額・手取り額の明細」
+  - ボタン: 「PDFで保存」「共有する」
+  - 月次確定（isMonthLocked）していない場合は
+  「※ 給与未確定のため参考値です」という注意バッジを表示する
+
+  ---
+  2. 日次勤怠レポートの印刷用ターゲット要素を追加
+  
+  TIMECARD_PRINT_ID = "timecard-print-target" という定数を定義し、
+  ShareModal 内（またはモーダルの外に sr-only で配置）に
+  以下の内容を持つ非表示 div を追加する：
+
+  [従業員名] 様　[YYYY年M月] 勤怠レポート
+
+  ┌──────────────────────────────────────────────────┐
+  │ 日付       │ 事業所  │ 出勤  │ 退勤  │ 休憩 │ 実働 │
+  ├──────────────────────────────────────────────────┤
+  │ 3/2（月）  │ 職場A  │ 09:00 │ 18:00 │ 60分 │ 8.0h │
+  │ ...                                               │
+  └──────────────────────────────────────────────────┘
+
+  月間実働合計: XX.Xh
+  出勤日数: XX日
+
+  表示データの仕様：
+  - timecardRows をすべて一覧表示する
+  - 事業所名は workplaces[row.workplaceId]?.name ?? "—" で取得
+  - 実働時間の計算は既存の calcHours と row.breakMinutes を使う
+  - isDayConfirmed === true の行には「確定済」バッジを表示する
+  - エラー行（ocrStatus === "error"）は赤字で「要修正」と表示する
+  - フッターに「このレポートは [発行日時] 時点の情報です」を記載する
+
+  ---
+  3. 日次・月次の PDF ダウンロード関数を追加
+  
+  既存の downloadPayslipPdf を参考に、以下の2関数を追加する：
+
+  async function downloadTimecardPdf(employeeName: string, currentDate: Date): Promise<void>
+  async function downloadMonthlyPayslipPdf(employeeName: string, currentDate: Date): Promise<void>
+
+  - downloadTimecardPdf: TIMECARD_PRINT_ID を対象に html2canvas → jsPDF でPDF化
+    - ファイル名: {氏名}_勤怠レポート_{YYYY-MM}.pdf
+  - downloadMonthlyPayslipPdf: 既存の downloadPayslipPdf をリネームして使用
+    - ファイル名: {氏名}_給与明細_{YYYY-MM}.pdf（変更なし）
+
+  ---
+  4. 共有関数の追加
+  
+  既存の sharePayslip を参考に以下の2関数を追加する：
+
+  async function shareTimecardReport(employeeName: string, currentDate: Date): Promise<void>
+  async function shareMonthlyPayslip(employeeName: string, currentDate: Date): Promise<void>
+
+  Web Share API が使えない環境では、
+  「URLをクリップボードにコピーしました」のトーストを表示する（既存と同様）。
+
+  shareTimecardReport の共有テキスト：
+  title: `{M月}分 勤怠レポート`
+  text: `{氏名}さんの{M月}分の勤怠レポートです。`
+  url: SHARE_DUMMY_URL
+
+  ---
+  5. 「共有する」ボタンの配置変更
+
+  現状
+
+  確定済み（isLocked）のときだけ ResultCard
+  内に「給与明細を共有する」「PDFをダウンロード」ボタンが表示される。
+
+  変更後
+
+  isLocked の有無にかかわらず、ResultCard の下（または PayrollTab 本体の
+  タイムカードセクションの直下）に常に「共有する」ボタンを1つ配置する：
+
+  [ Share2アイコン　従業員に共有する ]
+
+  - スタイル: border border-primary/30 text-primary bg-primary/5 rounded-xl
+  - クリックで ShareModal を開く
+  - isLocked でない場合は「未確定」バッジをボタン内に表示する
+
+  既存の ResultCard 内の「給与明細を共有する」「PDFをダウンロード」ボタンは削除する。
+
+  ---
+  6. PayrollTab 本体への組み込み
+  
+  - shareModalOpen の useState を追加する
+  - ShareModal に必要な props（timecardRows, workplaces, grossAmount, deductions, netPay,
+  isMonthLocked）を渡す
+  - deductions は ResultCard 内で計算している calcDeductions(...) の結果を
+  PayrollTab 本体の useMemo に引き上げて共有できるようにする
+
+  ---
+  変更対象ファイル
+  
+  - artifacts/payroll-app/src/components/PayrollTab.tsx のみ
+
