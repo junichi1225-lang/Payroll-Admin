@@ -1,5 +1,10 @@
+import type { DeductionBreakdown } from "./payroll-core";
+
 // マルチテナント識別子（DB移行時は認証コンテキストから取得）
 export const DEFAULT_TENANT_ID = "tenant-1";
+
+/** 自社名（給与明細・帳票のヘッダー表示用。DB移行時はテナント設定から取得）。 */
+export const DEFAULT_TENANT_NAME = "株式会社サンプル";
 
 export type PayrollStatus = "確定済み" | "未確定";
 export type EmployeeStatus = "在籍中" | "休職中" | "退職";
@@ -157,6 +162,17 @@ export interface PayrollResult {
   totalDeduction: number;        // 総控除額（所得税＋社保など簡易合算）
   netPay: number;                // 差引支給額（手取り）
   lockedAt: string | null;       // ISO8601。draft の場合は null
+  /**
+   * 確定時点の控除内訳スナップショット。
+   * 帳票（給与明細PDF・給与一覧PDF）が確定値をそのまま出力できるように保持する。
+   * レガシーデータ（本フィールド導入前の確定レコード）では undefined。
+   */
+  deductions?: DeductionBreakdown;
+  /**
+   * 確定時点の手当スナップショット（給与明細PDFの支給項目内訳用）。
+   * レガシーデータでは undefined。
+   */
+  allowances?: AllowanceItem[];
 }
 
 // ─────────────────────────────────────────────

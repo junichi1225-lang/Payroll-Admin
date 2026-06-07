@@ -1,0 +1,104 @@
+---
+  
+  以下の2つの機能を既存のPayroll-Adminアプリに追加してください。
+  既存のアーキテクチャに厳密に従って実装すること。
+
+  ---
+
+  ## 前提（既存の実装）
+
+  - `PayrollResultStatus`: `"draft" | "locked"` はすでにデータモデルに存在する
+  - `PayrollFinalizationTab.tsx` に `onLockOne` / `onLockAll` / `onUnlockOne` はすでに実装済み
+  - PDF生成ライブラリ `html2canvas-pro` + `jsPDF` はすでに導入済み
+  - スタイルは Tailwind CSS + shadcn/ui を使用
+  - データ永続化は現状 localStorage（`mock_payrollResultDB` など）
+
+  ---
+
+  ## 機能1：確定状態の視覚的フィードバック強化
+
+  ### 現状
+  `onLockOne` / `onLockAll` でロック処理は存在するが、
+  UIでの視覚的な「確定済み」表現が不十分。
+
+  ### 追加要件
+
+  **PayrollFinalizationTab.tsx** の従業員行に以下を実装する：
+
+  1. `PayrollResult.status === "locked"` の行は：
+     - 行全体の背景を `bg-gray-100` に変更
+     - テキストを `text-gray-400` で薄く表示
+     - 行の先頭に「✓ 確定済み」バッジ（緑: `bg-green-100 text-green-700`）を表示
+
+  2. 月の全従業員がロック済みの場合、画面上部に
+     「この月の給与は確定されています」というバナーを表示する
+     （`bg-green-50 border border-green-200` 等）
+
+  3. ロック済み行の編集系ボタン（「確定」ボタン）は `disabled` + グレーアウト表示にする
+     （「確定解除」ボタンは引き続き表示する）
+
+  ---
+
+  ## 機能2：確定後の共有機能（会計士・社労士向けPDF送付）
+
+  ### 配置
+  `PayrollFinalizationTab.tsx` の確定済み月の画面に「共有」セクションを追加。
+  全従業員がロック済みのときのみ表示する。
+
+  ### 送付先メールアドレスの管理
+  - Dashboard.tsx（または設定タブ）に「共有先メールアドレス」入力欄を追加
+  - localStorage キー `shareRecipientEmail` に文字列として保存
+  - 未設定の場合は送付ボタン押下時に「送付先を設定してください」とアラート表示
+
+  ---
+
+  ### PDF種類A：個人別給与明細PDF
+
+  **実装場所**: `PayrollFinalizationTab.tsx` 内の新規関数 `generatePayslipPDF(employeeId,
+  yearMonth)`
+
+  **PDF内容**（既存の `computePayroll()` の出力値を使用）：
+  - ヘッダー: 会社名（テナント名）、対象年月
+  - 従業員情報: 氏名（`EmployeeMaster.lastName + firstName`）、従業員番号（`id`）
+  - 支給項目: 基本給（`appliedBaseSalary`）、各手当（`AllowanceItem[]`）、総支給（`totalPayment`）
+  - 控除項目: 健康保険料、介護保険料（40歳以上のみ）、厚生年金、子育て支援金、
+    雇用保険、所得税、住民税（`EmployeeMaster.residentTax`）、総控除（`totalDeduction`）
+  - 差引支給額（`netPay`）
+
+  **ボタン**: 「個人別明細を送付」ボタンを共有セクションに配置
+  - 押下時: 確認ダイアログ「{送付先メール}
+  に全従業員分の給与明細PDFを送付します。よろしいですか？」
+  - 全従業員分のPDFをまとめて生成し、`mailto:` リンクで添付付き送付を試みる
+    （または「PDFをダウンロード」としてZIPで提供）
+
+  ---
+
+  ### PDF種類B：全従業員給与一覧PDF
+
+  
+  **PDF内容**（テーブル形式の一覧）:
+  - ヘッダー: 「{YYYY}年{MM}月 給与一覧」
+  - 列構成（左から）:
+    従業員番号 | 氏名 | 総支給額 | 健康保険料 | 介護保険料 | 厚生年金 | 雇用保険 | 所得税 | 住民税
+  | 差引支給額 
+  - 最終行に各列の合計を表示
+  - 全データは `mock_payrollResultDB` のロック済みスナップショットから取得
+  
+  **ボタン**: 「給与一覧を送付」ボタンを共有セクションに配置
+  - 押下時: 確認ダイアログ「{送付先メール} に給与一覧PDFを送付します。よろしいですか？」
+  - PDFを生成後、`mailto:` リンクまたはダウンロード
+  
+  ---
+  
+  ## 実装上の注意
+  
+  - 既存の `jsPDF` を使い、日本語テキストは文字化けしないよう
+    `doc.addFont()` でNoto Sans JPを埋め込むか、フォント問題が発生する場合は
+    日本語部分を英数字＋数値のみの構成にして対応する
+  - PDF生成ロジックは `generatePayslipPDF.ts` / `generatePayrollSummaryPDF.ts` として
+    `src/lib/` 配下に独立ファイルとして切り出す 
+  - メール送付は `mailto:` スキームを使う（バックエンドなしで実現）
+    件名: `【{YYYY}年{MM}月】給与明細`
+    本文: `{YYYY}年{MM}月分の給与明細をお送りします。`
+  - 送付完了後はトースト通知（shadcn/ui の `toast`）で「メーラーを起動しました」と表示
+

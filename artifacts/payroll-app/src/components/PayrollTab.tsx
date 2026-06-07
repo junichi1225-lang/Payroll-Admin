@@ -2632,6 +2632,8 @@ export function PayrollTab({
       totalDeduction: deductions.total,
       netPay: Math.max(0, grossAmount - deductions.total),
       lockedAt: new Date().toISOString(),
+      deductions,
+      allowances,
     };
     onLockOne(result);
     toast.success(`${monthLabel(currentDate)} の給与を確定しました`, {

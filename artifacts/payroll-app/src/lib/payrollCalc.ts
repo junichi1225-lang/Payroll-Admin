@@ -4,7 +4,8 @@
 // payrollInputs.loadEmployeeMonthComputation に委譲する。こちらは確定
 // スナップショット (PayrollResult) 用の薄いラッパーと ID/年月ヘルパーを提供する。
 
-import { EmployeeMaster, SalaryType, WorkplaceDef } from "./dummy-data";
+import { AllowanceItem, EmployeeMaster, SalaryType, WorkplaceDef } from "./dummy-data";
+import { DeductionBreakdown } from "./payroll-core";
 import { loadEmployeeMonthComputation } from "./payrollInputs";
 
 export interface PayrollSummary {
@@ -14,6 +15,10 @@ export interface PayrollSummary {
   totalPayment: number;
   totalDeduction: number;
   netPay: number;
+  /** 控除内訳（確定スナップショット / 帳票出力用） */
+  deductions: DeductionBreakdown;
+  /** 当月の手当（給与明細の支給項目内訳用） */
+  allowances: AllowanceItem[];
 }
 
 /**
@@ -44,6 +49,8 @@ export function computeMonthSummary(
     totalPayment: comp.totalPayment,
     totalDeduction: comp.totalDeduction,
     netPay: comp.netPay,
+    deductions: comp.deductions,
+    allowances: comp.allowances,
   };
 }
 

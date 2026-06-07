@@ -71,6 +71,10 @@ export interface MonthComputation {
   netPay: number;
   /** 控除内訳（両タブ共有） */
   deductions: DeductionBreakdown;
+  /** 当月の手当（給与明細の支給項目内訳用） */
+  allowances: AllowanceItem[];
+  /** 社会保険料率の引き当てに使用した都道府県 */
+  prefecture: string;
 }
 
 /**
@@ -188,5 +192,7 @@ export function loadEmployeeMonthComputation(
     totalDeduction: computation.deductions.total,
     netPay: computation.netPay,
     deductions: computation.deductions,
+    allowances,
+    prefecture: primaryPrefecture,
   };
 }

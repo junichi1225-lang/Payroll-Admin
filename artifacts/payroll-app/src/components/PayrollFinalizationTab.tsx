@@ -1,7 +1,20 @@
-import { useMemo } from "react";
-import { Lock, Unlock, ShieldCheck, AlertTriangle, Clock } from "lucide-react";
+import { useMemo, useState } from "react";
+import {
+  Lock,
+  Unlock,
+  ShieldCheck,
+  AlertTriangle,
+  Clock,
+  CheckCircle2,
+  Send,
+  FileText,
+  Files,
+  Mail,
+} from "lucide-react";
+import { toast } from "sonner";
 import {
   DEFAULT_TENANT_ID,
+  DEFAULT_TENANT_NAME,
   EmployeeMaster,
   EmployeeRecord,
   PayrollResult,
@@ -12,7 +25,20 @@ import {
   computeMonthSummary,
   toYearMonth,
 } from "@/lib/payrollCalc";
+import { loadEmployeeMonthComputation } from "@/lib/payrollInputs";
+import type { DeductionBreakdown } from "@/lib/payroll-core";
+import {
+  generatePayslipPDF,
+  type PayslipEmployeeData,
+} from "@/lib/generatePayslipPDF";
+import {
+  generatePayrollSummaryPDF,
+  type PayrollSummaryRow,
+} from "@/lib/generatePayrollSummaryPDF";
+import { usePersistedState } from "@/lib/usePersistedState";
 import { cn } from "@/lib/utils";
+
+const SHARE_EMAIL_KEY = "shareRecipientEmail";
 
 interface PayrollFinalizationTabProps {
   currentDate: Date;
@@ -96,6 +122,8 @@ export function PayrollFinalizationTab({
       totalDeduction: live.totalDeduction,
       netPay: live.netPay,
       lockedAt: new Date().toISOString(),
+      deductions: live.deductions,
+      allowances: live.allowances,
     };
     onLockOne(result);
   };
@@ -116,9 +144,135 @@ export function PayrollFinalizationTab({
         totalDeduction: live.totalDeduction,
         netPay: live.netPay,
         lockedAt: new Date().toISOString(),
+        deductions: live.deductions,
+        allowances: live.allowances,
       };
     });
     if (newResults.length > 0) onLockAll(newResults);
+  };
+
+  // ── 共有（会計士へのPDF送付） ──
+  // 全従業員がロック済みのときのみ表示する。
+  const allLocked = rows.length > 0 && draftRows.length === 0;
+  const [recipientEmail, setRecipientEmail] = usePersistedState<string>(SHARE_EMAIL_KEY, "");
+  const [sharing, setSharing] = useState(false);
+
+  /**
+   * ロック済みスナップショットから控除内訳・手当を取り出す。
+   * 旧バージョンで確定したレコード（deductions 未保存）は、同一の計算経路で再計算して補完する。
+   */
+  const resolveLockedDetail = (
+    snapshot: PayrollResult,
+  ): { deductions: DeductionBreakdown; allowances: { type: string; amount: number }[] } => {
+    if (snapshot.deductions) {
+      return {
+        deductions: snapshot.deductions,
+        allowances: (snapshot.allowances ?? []).map((a) => ({ type: a.type, amount: a.amount })),
+      };
+    }
+    const comp = loadEmployeeMonthComputation(
+      snapshot.employeeId,
+      year,
+      month,
+      workplaces,
+      employeeDB[snapshot.employeeId],
+    );
+    return {
+      deductions: comp.deductions,
+      allowances: comp.allowances.map((a) => ({ type: a.type, amount: a.amount })),
+    };
+  };
+
+  const openMailer = () => {
+    const [y, m] = yyyymm.split("-");
+    const subject = `【${y}年${m}月】給与明細`;
+    const body = `${y}年${m}月分の給与明細をお送りします。`;
+    const href = `mailto:${encodeURIComponent(recipientEmail)}?subject=${encodeURIComponent(
+      subject,
+    )}&body=${encodeURIComponent(body)}`;
+    window.location.href = href;
+    toast.success("メーラーを起動しました", {
+      description: "ダウンロードしたPDFを添付して送信してください。",
+    });
+  };
+
+  const handleSharePayslips = async () => {
+    if (!recipientEmail.trim()) {
+      window.alert("送付先メールアドレスを設定してください。");
+      return;
+    }
+    if (!window.confirm(`${recipientEmail} 宛に全従業員の給与明細を送付します。よろしいですか？`))
+      return;
+    setSharing(true);
+    try {
+      const employeesData: PayslipEmployeeData[] = rows
+        .filter((r) => r.isLocked)
+        .map((r) => {
+          const snap = r.snapshot;
+          const { deductions, allowances } = resolveLockedDetail(snap);
+          return {
+            employeeNumber: r.emp.employeeNumber,
+            employeeName: r.emp.name,
+            salaryType: snap.appliedSalaryType,
+            baseSalary: snap.appliedBaseSalary,
+            allowances,
+            totalPayment: snap.totalPayment,
+            deductions,
+            netPay: snap.netPay,
+          };
+        });
+      await generatePayslipPDF({
+        companyName: DEFAULT_TENANT_NAME,
+        yearMonth: yyyymm,
+        employees: employeesData,
+      });
+      openMailer();
+    } catch (err) {
+      console.error("[handleSharePayslips]", err);
+      toast.error("給与明細PDFの生成に失敗しました");
+    } finally {
+      setSharing(false);
+    }
+  };
+
+  const handleShareSummary = async () => {
+    if (!recipientEmail.trim()) {
+      window.alert("送付先メールアドレスを設定してください。");
+      return;
+    }
+    if (!window.confirm(`${recipientEmail} 宛に給与支給一覧を送付します。よろしいですか？`)) return;
+    setSharing(true);
+    try {
+      const summaryRows: PayrollSummaryRow[] = rows
+        .filter((r) => r.isLocked)
+        .map((r) => {
+          const snap = r.snapshot;
+          const { deductions } = resolveLockedDetail(snap);
+          return {
+            employeeNumber: r.emp.employeeNumber,
+            name: r.emp.name,
+            totalPayment: snap.totalPayment,
+            health: deductions.health,
+            nursingCare: deductions.nursingCare,
+            pension: deductions.pension,
+            labor: deductions.labor,
+            incomeTax: deductions.incomeTax,
+            residentTax: deductions.residentTax,
+            netPay: snap.netPay,
+          };
+        });
+      await generatePayrollSummaryPDF({
+        companyName: DEFAULT_TENANT_NAME,
+        yearMonth: yyyymm,
+        rows: summaryRows,
+      });
+      openMailer();
+    } catch (err) {
+      console.error("[handleShareSummary]", err);
+      toast.error("給与一覧PDFの生成に失敗しました");
+    } finally {
+      setSharing(false);
+    }
   };
 
   return (
@@ -160,6 +314,19 @@ export function PayrollFinalizationTab({
         </p>
       </div>
 
+      {/* 全員確定バナー */}
+      {allLocked && (
+        <div
+          className="flex items-center gap-2 text-sm font-semibold text-green-800 bg-green-50 border border-green-200 rounded-xl p-3"
+          data-testid="all-locked-banner"
+        >
+          <CheckCircle2 className="w-5 h-5 flex-shrink-0 text-green-600" />
+          <p>
+            全{employees.length}名の給与が確定済みです。会計士・社労士へPDFを共有できます。
+          </p>
+        </div>
+      )}
+
       {/* テーブル */}
       <div className="rounded-xl border border-border overflow-x-auto bg-card">
         <table className="w-full text-sm min-w-[820px]">
@@ -200,50 +367,72 @@ export function PayrollFinalizationTab({
                   data-locked={row.isLocked ? "true" : "false"}
                   className={cn(
                     "border-b border-border/50 transition-colors",
-                    row.isLocked ? "bg-emerald-50/30" : "hover:bg-muted/20",
+                    row.isLocked ? "bg-gray-100" : "hover:bg-muted/20",
                   )}
                 >
                   <td className="px-3 py-2.5">
                     <div className="flex flex-col gap-0.5">
-                      <span className="text-sm font-semibold text-foreground">{row.emp.name}</span>
-                      <span className="text-[10px] text-muted-foreground">
+                      <span className="flex items-center gap-1.5">
+                        <span
+                          className={cn(
+                            "text-sm font-semibold",
+                            row.isLocked ? "text-gray-400" : "text-foreground",
+                          )}
+                        >
+                          {row.emp.name}
+                        </span>
+                        {row.isLocked && (
+                          <span
+                            className="inline-flex items-center gap-0.5 text-[10px] font-bold text-green-700 bg-green-100 border border-green-300 rounded-full px-1.5 py-0.5"
+                            data-testid={`badge-locked-${row.emp.id}`}
+                          >
+                            <CheckCircle2 className="w-3 h-3" />
+                            確定済み
+                          </span>
+                        )}
+                      </span>
+                      <span className={cn("text-[10px]", row.isLocked ? "text-gray-400" : "text-muted-foreground")}>
                         {row.emp.employeeNumber} · {row.emp.department}
                       </span>
                     </div>
                   </td>
                   <td className="px-2 py-2.5">
                     <div className="flex flex-col">
-                      <span className="text-xs text-muted-foreground">{data.salaryType}</span>
-                      <span className="text-xs font-semibold text-foreground tabular-nums">
+                      <span className={cn("text-xs", row.isLocked ? "text-gray-400" : "text-muted-foreground")}>{data.salaryType}</span>
+                      <span className={cn("text-xs font-semibold tabular-nums", row.isLocked ? "text-gray-400" : "text-foreground")}>
                         {yen(data.baseSalary)}
                       </span>
                     </div>
                   </td>
-                  <td className="px-2 py-2.5 text-right tabular-nums text-xs text-foreground">
+                  <td className={cn("px-2 py-2.5 text-right tabular-nums text-xs", row.isLocked ? "text-gray-400" : "text-foreground")}>
                     <span className="inline-flex items-center gap-1 justify-end">
-                      <Clock className="w-3 h-3 text-muted-foreground/60" />
+                      <Clock className={cn("w-3 h-3", row.isLocked ? "text-gray-300" : "text-muted-foreground/60")} />
                       {data.hours.toFixed(1)}
                     </span>
                   </td>
-                  <td className="px-2 py-2.5 text-right tabular-nums text-xs font-semibold text-foreground">
+                  <td className={cn("px-2 py-2.5 text-right tabular-nums text-xs font-semibold", row.isLocked ? "text-gray-400" : "text-foreground")}>
                     {yen(data.payment)}
                   </td>
-                  <td className="px-2 py-2.5 text-right tabular-nums text-xs text-rose-700">
+                  <td className={cn("px-2 py-2.5 text-right tabular-nums text-xs", row.isLocked ? "text-gray-400" : "text-rose-700")}>
                     -{yen(data.deduction)}
                   </td>
                   <td
-                    className="px-2 py-2.5 text-right tabular-nums text-sm font-bold text-primary"
+                    className={cn("px-2 py-2.5 text-right tabular-nums text-sm font-bold", row.isLocked ? "text-gray-400" : "text-primary")}
                     data-testid={`netpay-${row.emp.id}`}
                   >
                     {yen(data.net)}
                   </td>
                   <td className="px-2 py-2.5 text-center">
                     {row.isLocked ? (
-                      <div className="flex flex-col items-center gap-1">
-                        <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-100 border border-emerald-300 rounded-full px-2 py-0.5">
+                      <div className="flex flex-col items-center gap-1.5">
+                        <button
+                          disabled
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-gray-200 text-gray-400 text-xs font-semibold cursor-not-allowed"
+                          aria-label={`${row.emp.name}は確定済み`}
+                        >
                           <Lock className="w-3 h-3" />
-                          確定済
-                        </span>
+                          確定
+                        </button>
                         <button
                           onClick={() => onUnlockOne(row.emp.id, yyyymm)}
                           className="inline-flex items-center gap-1 text-[10px] font-medium text-muted-foreground hover:text-foreground transition-colors"
@@ -287,6 +476,82 @@ export function PayrollFinalizationTab({
           </tfoot>
         </table>
       </div>
+
+      {/* 共有（会計士・社労士へのPDF送付） — 全員確定時のみ表示 */}
+      {allLocked && (
+        <div
+          className="rounded-xl border border-border bg-card p-4 space-y-4"
+          data-testid="share-section"
+        >
+          <div className="flex items-center gap-2.5">
+            <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center">
+              <Send className="w-4.5 h-4.5 text-primary" />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-foreground">会計士・社労士へPDFを共有</p>
+              <p className="text-xs text-muted-foreground">
+                確定済みの給与データをPDF化し、メールで送付します。
+              </p>
+            </div>
+          </div>
+
+          {/* 送付先メールアドレス */}
+          <div className="space-y-1.5">
+            <label
+              htmlFor="share-recipient-email"
+              className="flex items-center gap-1.5 text-xs font-semibold text-foreground"
+            >
+              <Mail className="w-3.5 h-3.5 text-muted-foreground" />
+              送付先メールアドレス
+            </label>
+            <input
+              id="share-recipient-email"
+              type="email"
+              value={recipientEmail}
+              onChange={(e) => setRecipientEmail(e.target.value)}
+              placeholder="例：accountant@example.com"
+              data-testid="share-email-input"
+              className="w-full px-3 py-2.5 rounded-xl border border-border bg-background text-foreground text-sm focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all placeholder:text-muted-foreground/40"
+            />
+          </div>
+
+          {/* 送付ボタン */}
+          <div className="flex flex-col sm:flex-row gap-2.5">
+            <button
+              onClick={handleSharePayslips}
+              disabled={sharing}
+              data-testid="share-payslips-btn"
+              className={cn(
+                "flex-1 inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors shadow-sm",
+                sharing
+                  ? "bg-muted text-muted-foreground cursor-not-allowed"
+                  : "bg-primary text-primary-foreground hover:bg-primary/90",
+              )}
+            >
+              <FileText className="w-4 h-4" />
+              個人別 給与明細を送付
+            </button>
+            <button
+              onClick={handleShareSummary}
+              disabled={sharing}
+              data-testid="share-summary-btn"
+              className={cn(
+                "flex-1 inline-flex items-center justify-center gap-1.5 px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors border",
+                sharing
+                  ? "bg-muted text-muted-foreground border-border cursor-not-allowed"
+                  : "bg-secondary text-foreground border-border hover:bg-secondary/70",
+              )}
+            >
+              <Files className="w-4 h-4" />
+              全従業員一覧を送付
+            </button>
+          </div>
+
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
+            ※ メール添付はお使いのメールソフトで行います。ボタンを押すとPDFがダウンロードされ、メーラーが起動します。ダウンロードしたPDFを添付して送信してください。
+          </p>
+        </div>
+      )}
     </div>
   );
 }
