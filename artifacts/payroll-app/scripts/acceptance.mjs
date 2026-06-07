@@ -42,6 +42,7 @@ import { computePayroll, round50sen, floorYen } from "@/lib/payroll-core";
 import { loadEmployeeMonthComputation } from "@/lib/payrollInputs";
 import { bucketPaidHours, computeHourlyGross, EMPTY_BUCKETS } from "@/lib/timeEngine";
 import { resolveRates } from "@/lib/constants/rates";
+import { calculateIncomeTax } from "@/lib/taxCalculator";
 globalThis.__computePayroll = computePayroll;
 globalThis.__loadEmployeeMonthComputation = loadEmployeeMonthComputation;
 globalThis.__round50sen = round50sen;
@@ -50,6 +51,7 @@ globalThis.__bucketPaidHours = bucketPaidHours;
 globalThis.__computeHourlyGross = computeHourlyGross;
 globalThis.__EMPTY_BUCKETS = EMPTY_BUCKETS;
 globalThis.__resolveRates = resolveRates;
+globalThis.__calculateIncomeTax = calculateIncomeTax;
 `;
 
 const result = await esbuild.build({
@@ -204,6 +206,62 @@ for (const [label, got, exp] of dChecks) {
   const pass = approx(got, exp);
   ok = ok && pass;
   console.log(`${pass ? "✓" : "✗"} ${label}: ${got}`);
+}
+
+// ───────────────────────────────────────────────────────────
+// B. 所得税（令和8年分・月額表 甲欄・扶養0）1円単位一致
+//    入力は「その月の社会保険料等控除後の給与等の金額」
+// ───────────────────────────────────────────────────────────
+const calculateIncomeTax = globalThis.__calculateIncomeTax;
+console.log("\n=== B. 所得税 令和8年分 月額表(甲・扶養0) ===");
+const bChecks = [
+  ["100,000(105,000未満)", calculateIncomeTax(100_000), 0],
+  ["106,000(105,000〜107,000)", calculateIncomeTax(106_000), 170],
+  ["150,000", calculateIncomeTax(150_000), 2_420],
+  ["200,000", calculateIncomeTax(200_000), 4_340],
+  ["250,000", calculateIncomeTax(250_000), 6_110],
+  ["300,000", calculateIncomeTax(300_000), 7_930],
+  ["350,000", calculateIncomeTax(350_000), 11_730],
+  ["400,000", calculateIncomeTax(400_000), 15_650],
+  ["450,000", calculateIncomeTax(450_000), 19_860],
+  ["500,000", calculateIncomeTax(500_000), 28_190],
+  ["600,000", calculateIncomeTax(600_000), 45_390],
+  ["700,000", calculateIncomeTax(700_000), 63_590],
+];
+for (const [label, got, exp] of bChecks) {
+  const pass = got === exp;
+  ok = ok && pass;
+  console.log(`${pass ? "✓" : "✗"} ${label}: ${got}　(期待 ${exp})`);
+}
+// 区分切替の境界（以上〜未満 と 月額表↔電算機特例 の切替）
+const boundaryChecks = [
+  ["104,999(非課税側)", calculateIncomeTax(104_999), 0],
+  ["105,000(月額表 先頭)", calculateIncomeTax(105_000), 170],
+  ["739,999(月額表 末尾)", calculateIncomeTax(739_999), 71_380],
+  ["740,000(電算機特例 開始)", calculateIncomeTax(740_000), 71_680],
+];
+for (const [label, got, exp] of boundaryChecks) {
+  const pass = got === exp;
+  ok = ok && pass;
+  console.log(`${pass ? "✓" : "✗"} 境界 ${label}: ${got}　(期待 ${exp})`);
+}
+// 受け入れケース(300k/東京)の課税ベース253,500 → 月額表 [251,000〜254,000)=6,220
+{
+  const got = calculateIncomeTax(253_500);
+  const pass = got === 6_220;
+  ok = ok && pass;
+  console.log(`${pass ? "✓" : "✗"} 課税ベース253,500(300k東京の例): ${got}　(期待 6,220)`);
+}
+// 740,000円以上は電算機特例。800,000円の算出根拠を確認:
+//   別表第一: A≥708,331 → 給与所得控除 162,500
+//   別表第三: 基礎控除 48,333
+//   B = 800,000 - 162,500 - 48,333 = 589,167（別表第四 579,167〜750,000 帯）
+//   税額 = 589,167×0.23483 - 54,113 = 84,241.09 → 10円四捨五入 = 84,240
+{
+  const got = calculateIncomeTax(800_000);
+  const pass = got === 84_240;
+  ok = ok && pass;
+  console.log(`${pass ? "✓" : "✗"} 800,000(電算機特例): ${got}　(期待 84,240)`);
 }
 
 console.log(ok ? "\nRESULT: PASS ✅" : "\nRESULT: FAIL ❌");
