@@ -160,3 +160,16 @@ export function computePayroll(input: ComputePayrollInput): PayrollComputation {
     netPay: Math.max(0, gross - total),
   };
 }
+
+// ───────────────────────────────────────────────────────────
+// 賞与計算（第2エントリポイント）の再エクスポート
+// ───────────────────────────────────────────────────────────
+export {
+  computeBonus,
+  HEALTH_STANDARD_BONUS_ANNUAL_CAP,
+  PENSION_STANDARD_BONUS_PER_TIME_CAP,
+  type ComputeBonusInput,
+  type ComputeBonusPrevMonth,
+  type BonusComputation,
+  type BonusDeductionBreakdown,
+} from "./bonus";

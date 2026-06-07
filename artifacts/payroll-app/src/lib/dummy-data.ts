@@ -176,6 +176,85 @@ export interface PayrollResult {
 }
 
 // ─────────────────────────────────────────────
+// 賞与（賞与回 / 賞与確定レコード）
+//
+// 月次給与とは独立したエンティティ。賞与は月次の PayrollResult /
+// timecard 等の構造には一切混在させない（賞与専用の DB キーで永続化）。
+//   - mock_bonusRunDB:    BonusRun[]    （賞与の支給回。支給日＋名称）
+//   - mock_bonusResultDB: BonusResult[] （従業員×賞与回の確定スナップショット）
+// ─────────────────────────────────────────────
+
+export type BonusRunStatus = "draft" | "locked";
+
+/** 賞与の支給回（例: 2026年 夏季賞与）。月次給与とは独立。 */
+export interface BonusRun {
+  tenantId: string;
+  id: string;              // `br_${YYYYMMDD}_${seq}` 等の一意ID
+  name: string;            // 例: "2026年 夏季賞与"
+  paymentDate: string;     // 支給日 "YYYY-MM-DD"（前月給与の特定・料率引き当てに使用）
+  status: BonusRunStatus;  // draft=編集可 / locked=全従業員確定済み
+  createdAt: string;       // ISO8601
+  // 賞与回作成時点の対象従業員IDスナップショット。以降に従業員を追加・削除しても
+  // この賞与回の対象（＝全員確定判定の母集団）は固定される。
+  employeeIds: string[];
+}
+
+export type BonusResultStatus = "draft" | "locked";
+
+/** 賞与源泉所得税の計算方式（算出率表 / 特例1 / 特例2）。 */
+export type BonusTaxMethodSnapshot = "rate-table" | "special-no-prev-salary" | "special-over-10x";
+
+/**
+ * 賞与計算時に引き当てた料率・前提のスナップショット。
+ * 確定後に料率マスタが変わっても帳票が確定値を再現できるよう保持する。
+ */
+export interface BonusAppliedRatesSnapshot {
+  prefecture: string;
+  /** 料率引き当てに使った年月 "YYYY-MM"（支給日の年月） */
+  targetYearMonth: string;
+  healthInsuranceRate: number;
+  nursingCareInsuranceRate: number;
+  pensionInsuranceRate: number;
+  childcareSupportRate: number;
+  employmentInsuranceEmployeeRate: number;
+  /** 源泉所得税の計算方式 */
+  taxMethod: BonusTaxMethodSnapshot;
+  /** 算出率表を使った場合の率(%)。特例の場合は null。 */
+  bonusTaxRate: number | null;
+  /** 率引き当て／特例判定に使った前月の社保控除後給与（円） */
+  prevMonthSalaryAfterSocialInsurance: number;
+  /** 前月給与情報が暫定（前月分が未ロックで現マスタから再計算）か */
+  prevMonthProvisional: boolean;
+}
+
+/** 従業員×賞与回の確定スナップショット。 */
+export interface BonusResult {
+  tenantId: string;
+  id: string;                   // `bres_${bonusRunId}_${employeeId}`
+  bonusRunId: string;
+  employeeId: string;
+  status: BonusResultStatus;
+  grossBonus: number;           // 賞与総支給額（社会保険料控除前）
+  standardBonusAmount: number;  // 標準賞与額（1,000円未満切捨て）
+  /** 健保系（健康・介護・支援金）の標準賞与額。年度573万円累計でカット後 */
+  healthBaseStandardBonus: number;
+  /** 厚年系の標準賞与額。1回150万円でカット後 */
+  pensionBaseStandardBonus: number;
+  healthInsurance: number;      // 健康保険料（被保険者負担）
+  nursingCare: number;          // 介護保険料（第2号該当のみ）
+  childSupport: number;         // 子ども子育て支援金（被保険者負担）
+  pension: number;              // 厚生年金保険料（被保険者負担）
+  employmentInsurance: number;  // 雇用保険料（賞与総額ベース）
+  incomeTax: number;            // 賞与の源泉所得税（住民税は賞与にかからない）
+  socialInsuranceTotal: number; // 社会保険料（被保険者負担）合計
+  totalDeduction: number;       // 控除合計
+  netBonus: number;             // 差引支給額
+  lockedAt: string | null;      // ISO8601。draft は null
+  /** 計算時に引き当てた料率・前提のスナップショット */
+  appliedRates: BonusAppliedRatesSnapshot;
+}
+
+// ─────────────────────────────────────────────
 // 職場マスタ DB
 // ─────────────────────────────────────────────
 

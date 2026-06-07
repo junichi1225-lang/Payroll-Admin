@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { MonthSwitcher } from "@/components/MonthSwitcher";
-import { DUMMY_EMPLOYEE_DATA, EmployeeRecord, EmployeeColor, DEFAULT_WORKPLACES, WorkplaceDef, EmployeeMaster, ContractMaster, PayrollResult, DEFAULT_TENANT_ID, DEFAULT_EMPLOYEE_MASTERS } from "@/lib/dummy-data";
+import { DUMMY_EMPLOYEE_DATA, EmployeeRecord, EmployeeColor, DEFAULT_WORKPLACES, WorkplaceDef, EmployeeMaster, ContractMaster, PayrollResult, BonusRun, BonusResult, DEFAULT_TENANT_ID, DEFAULT_EMPLOYEE_MASTERS } from "@/lib/dummy-data";
 import { usePersistedState } from "@/lib/usePersistedState";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
@@ -9,6 +9,7 @@ import { Plus, Users, CheckCircle2 } from "lucide-react";
 import { EmployeeInfoTab } from "@/components/EmployeeInfoTab";
 import { PayrollTab } from "@/components/PayrollTab";
 import { PayrollFinalizationTab } from "@/components/PayrollFinalizationTab";
+import { BonusTab } from "@/components/BonusTab";
 import {
   Dialog,
   DialogContent,
@@ -189,12 +190,13 @@ function EmployeeSidebarContent({
 // メインページ
 // ─────────────────────────────────────────────
 
-type TabType = "payroll" | "info" | "finalize";
+type TabType = "payroll" | "info" | "finalize" | "bonus";
 
 const TAB_LABELS: Record<TabType, string> = {
   payroll: "給与情報",
   info: "社員情報",
   finalize: "給与確定",
+  bonus: "賞与",
 };
 
 export default function Dashboard() {
@@ -272,6 +274,10 @@ export default function Dashboard() {
   // 給与確定スナップショット DB（マスタ変更後も金額が変動しないように保持）
   // ユニーク制約: (tenantId, employeeId, targetYearMonth) — 1人 × 1月 = 1レコード
   const [payrollResultDB, setPayrollResultDB] = usePersistedState<PayrollResult[]>("mock_payrollResultDB", []);
+
+  // 賞与（月次給与とは独立したエンティティ。月次の構造には一切混在させない）
+  const [bonusRunDB, setBonusRunDB] = usePersistedState<BonusRun[]>("mock_bonusRunDB", []);
+  const [bonusResultDB, setBonusResultDB] = usePersistedState<BonusResult[]>("mock_bonusResultDB", []);
 
   /**
    * (tenantId, employeeId, targetYearMonth) を一意キーとする正規化。
@@ -514,7 +520,7 @@ export default function Dashboard() {
 
                   {/* タブ */}
                   <div className="inline-flex bg-secondary/80 p-1 rounded-2xl border border-border/50 shadow-inner mb-6">
-                    {(["payroll", "info", "finalize"] as const).map((tab) => (
+                    {(["payroll", "info", "finalize", "bonus"] as const).map((tab) => (
                       <button
                         key={tab}
                         onClick={() => setActiveTab(tab)}
@@ -567,7 +573,7 @@ export default function Dashboard() {
                           savedContract={contractDB.find((c) => c.employeeId === selectedEmployeeId && c.workplaceId === "default")}
                           onSave={handleSaveEmployeeMaster}
                         />
-                      ) : (
+                      ) : activeTab === "finalize" ? (
                         <PayrollFinalizationTab
                           currentDate={currentDate}
                           employees={employees}
@@ -577,6 +583,17 @@ export default function Dashboard() {
                           onLockOne={handleLockOne}
                           onUnlockOne={handleUnlockOne}
                           onLockAll={handleLockAll}
+                        />
+                      ) : (
+                        <BonusTab
+                          employees={employees}
+                          employeeDB={employeeDB}
+                          workplaces={workplaces}
+                          payrollResultDB={payrollResultDB}
+                          bonusRunDB={bonusRunDB}
+                          setBonusRunDB={setBonusRunDB}
+                          bonusResultDB={bonusResultDB}
+                          setBonusResultDB={setBonusResultDB}
                         />
                       )}
                     </motion.div>
