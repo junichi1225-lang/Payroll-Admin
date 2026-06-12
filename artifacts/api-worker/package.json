@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@workspace/api-zod": "workspace:*",
+    "@workspace/db": "workspace:*",
     "hono": "^4.12.25"
   },
   "devDependencies": {

@@ -6,5 +6,5 @@
     "lib": ["es2022"]
   },
   "include": ["src/**/*.ts", "test/**/*.ts", "worker-configuration.d.ts"],
-  "references": [{ "path": "../../lib/api-zod" }]
+  "references": [{ "path": "../../lib/api-zod" }, { "path": "../../lib/db" }]
 }
