@@ -31,3 +31,8 @@ jobs:
         run: |
           pnpm --filter @workspace/api-spec run codegen
           git diff --exit-code -- lib/api-client-react lib/api-zod
+
+      - name: Worker types diff check
+        run: |
+          pnpm --filter @workspace/api-worker run cf-typegen
+          git diff --exit-code -- artifacts/api-worker/worker-configuration.d.ts
