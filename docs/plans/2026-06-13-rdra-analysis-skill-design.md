@@ -34,7 +34,7 @@ RDRA2.0 のシステム価値・外部環境・境界・システムの 4 層を
 
 - `scripts/render.mjs` は Node の標準機能だけで動き、npm 依存を持たない。`analysis.md` を読み、テンプレート HTML の `<script type="text/markdown">` に内容を埋め込んで `index.html` を書き出す
 - ブラウザ側で marked.js が Markdown を HTML へ、mermaid.js が図を描画する。どちらも CDN から読み込む
-- `<meta http-equiv="refresh" content="2">` で自動リロードする
+- `<meta http-equiv="refresh" content="10">` で自動リロードする
 
 Claude は毎ターン `analysis.md` を小さく編集し、`node render.mjs` を実行するだけで済みます。HTML 全文を書き直さないため、対話を重ねてもトークン消費を抑えられます。
 
