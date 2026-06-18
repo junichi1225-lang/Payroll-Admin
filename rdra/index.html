@@ -3,8 +3,6 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <!-- 10 秒ごとに自動リロードして、再生成された内容を反映する -->
-  <meta http-equiv="refresh" content="10">
   <title>RDRA 要求分析</title>
   <style>
     :root {
@@ -643,18 +641,6 @@ stateDiagram-v2
     import { marked } from 'https://cdn.jsdelivr.net/npm/marked@12/lib/marked.esm.js';
     import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
 
-    const SCROLL_KEY = 'rdra-scroll-y';
-
-    // リロードをまたいでスクロール位置を保つ。自動リロードでも読んでいる場所を見失わないため
-    window.addEventListener('beforeunload', () => {
-      sessionStorage.setItem(SCROLL_KEY, String(window.scrollY));
-    });
-
-    function restoreScroll() {
-      const y = sessionStorage.getItem(SCROLL_KEY);
-      if (y !== null) window.scrollTo(0, parseInt(y, 10));
-    }
-
     async function render() {
       const source = document.getElementById('source').textContent;
       const content = document.getElementById('content');
@@ -667,11 +653,9 @@ stateDiagram-v2
       marked.setOptions({ gfm: true, breaks: false });
       content.innerHTML = marked.parse(source);
 
-      // ドキュメントの最初の見出しをタブのタイトルに反映する
       const firstHeading = content.querySelector('h1');
       if (firstHeading) document.title = firstHeading.textContent;
 
-      // marked が出力した mermaid のコードブロックを mermaid 用の要素へ変換する
       content.querySelectorAll('code.language-mermaid').forEach((code) => {
         const pre = code.parentElement;
         const div = document.createElement('div');
@@ -684,14 +668,30 @@ stateDiagram-v2
       try {
         await mermaid.run({ querySelector: '.mermaid' });
       } catch (e) {
-        // 1 つの図のエラーで全体が止まらないよう、エラーは図の位置に表示する
         console.error(e);
       }
-
-      restoreScroll();
     }
 
     render();
+
+    // dev.mjs の SSE エンドポイントに接続し、index.html の変更時にページ全体をリロードせず差分だけ再描画する
+    if (typeof EventSource !== 'undefined' && location.protocol !== 'file:') {
+      const es = new EventSource('/events');
+      es.onmessage = async (e) => {
+        if (e.data !== 'reload') return;
+        try {
+          const res = await fetch(location.href, { cache: 'no-store' });
+          const html = await res.text();
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          const newSource = doc.getElementById('source')?.textContent ?? '';
+          if (newSource === document.getElementById('source').textContent) return;
+          document.getElementById('source').textContent = newSource;
+          await render();
+        } catch (err) {
+          console.error('Live reload failed:', err);
+        }
+      };
+    }
   </script>
 </body>
 </html>
