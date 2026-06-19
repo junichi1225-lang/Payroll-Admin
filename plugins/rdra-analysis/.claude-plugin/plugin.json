@@ -1,0 +1,9 @@
+{
+  "name": "rdra-analysis",
+  "version": "0.1.0",
+  "description": "RDRA の考え方で要求分析を対話的に進め、結果を HTML でプレビューするプラグイン",
+  "author": {
+    "name": "Payroll-Admin Team"
+  },
+  "keywords": ["rdra", "要求分析", "requirements", "event-modeling"]
+}

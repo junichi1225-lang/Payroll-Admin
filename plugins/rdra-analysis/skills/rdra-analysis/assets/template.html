@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RDRA 要求分析</title>
+  <style>
+    :root {
+      --fg: #1a1a1a;
+      --muted: #6b7280;
+      --border: #d1d5db;
+      --bg: #ffffff;
+      --accent: #1565c0;
+      --code-bg: #f3f4f6;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--fg);
+      background: var(--bg);
+      font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", "Segoe UI", sans-serif;
+      line-height: 1.8;
+    }
+    main {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 40px 24px 120px;
+    }
+    h1, h2, h3, h4 { line-height: 1.4; font-weight: 700; }
+    h1 { font-size: 1.9rem; border-bottom: 3px solid var(--accent); padding-bottom: .3em; margin-top: 0; }
+    h2 { font-size: 1.45rem; border-bottom: 1px solid var(--border); padding-bottom: .25em; margin-top: 2.2em; }
+    h3 { font-size: 1.18rem; margin-top: 1.8em; }
+    h4 { font-size: 1.02rem; color: var(--muted); }
+    a { color: var(--accent); }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 1em 0;
+      font-size: .95rem;
+    }
+    th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f9fafb; font-weight: 600; }
+    tr:nth-child(even) td { background: #fcfcfd; }
+    ul, ol { padding-left: 1.4em; }
+    li { margin: .2em 0; }
+    li > ul, li > ol { margin: .2em 0; }
+    code:not(.language-mermaid) {
+      background: var(--code-bg);
+      padding: .1em .4em;
+      border-radius: 4px;
+      font-size: .9em;
+    }
+    pre code { display: block; padding: 12px; overflow-x: auto; }
+    blockquote {
+      margin: 1em 0;
+      padding: .2em 1em;
+      border-left: 4px solid var(--border);
+      color: var(--muted);
+    }
+    .mermaid {
+      margin: 1.2em 0;
+      text-align: center;
+    }
+    .render-error {
+      background: #fdecec;
+      border: 1px solid #f5b5b5;
+      color: #9b1c1c;
+      padding: 8px 12px;
+      border-radius: 6px;
+      white-space: pre-wrap;
+      font-size: .85rem;
+    }
+    .empty {
+      color: var(--muted);
+      text-align: center;
+      margin-top: 4em;
+    }
+  </style>
+</head>
+<body>
+  <main id="content"><p class="empty">読み込み中…</p></main>
+
+  <!-- analysis.md の内容。render.mjs が埋め込む -->
+  <script type="text/markdown" id="source">__MARKDOWN_CONTENT__</script>
+
+  <script type="module">
+    import { marked } from 'https://cdn.jsdelivr.net/npm/marked@12/lib/marked.esm.js';
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+
+    async function render() {
+      const source = document.getElementById('source').textContent;
+      const content = document.getElementById('content');
+
+      if (!source.trim()) {
+        content.innerHTML = '<p class="empty">まだ内容がありません。対話を始めてください。</p>';
+        return;
+      }
+
+      marked.setOptions({ gfm: true, breaks: false });
+      content.innerHTML = marked.parse(source);
+
+      const firstHeading = content.querySelector('h1');
+      if (firstHeading) document.title = firstHeading.textContent;
+
+      content.querySelectorAll('code.language-mermaid').forEach((code) => {
+        const pre = code.parentElement;
+        const div = document.createElement('div');
+        div.className = 'mermaid';
+        div.textContent = code.textContent;
+        pre.replaceWith(div);
+      });
+
+      mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'loose' });
+      try {
+        await mermaid.run({ querySelector: '.mermaid' });
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    render();
+
+    // dev.mjs の SSE エンドポイントに接続し、index.html の変更時にページ全体をリロードせず差分だけ再描画する
+    if (typeof EventSource !== 'undefined' && location.protocol !== 'file:') {
+      const es = new EventSource('/events');
+      es.onmessage = async (e) => {
+        if (e.data !== 'reload') return;
+        try {
+          const res = await fetch(location.href, { cache: 'no-store' });
+          const html = await res.text();
+          const doc = new DOMParser().parseFromString(html, 'text/html');
+          const newSource = doc.getElementById('source')?.textContent ?? '';
+          if (newSource === document.getElementById('source').textContent) return;
+          document.getElementById('source').textContent = newSource;
+          await render();
+        } catch (err) {
+          console.error('Live reload failed:', err);
+        }
+      };
+    }
+  </script>
+</body>
+</html>
