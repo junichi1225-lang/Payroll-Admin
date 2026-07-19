@@ -1,0 +1,268 @@
+# Replit Agent 向け作業指示：コード監査で見つかった課題の修正
+
+前回のコード監査（30項目）を優先度別に整理し、修正方針をまとめた。
+「A. 具体的な修正コードを提示できるもの」はそのまま貼り付けて適用してほしい。
+「B. 設計判断込みで実装が必要なもの」は方針を書いたので、既存コードを見ながら実装してほしい。
+
+---
+
+## 優先度1：今すぐ修正すべきバグ
+
+### 1-1. isEmploymentInsurance フラグが雇用保険計算に未反映
+
+**ファイル**: `payroll-core/index.ts:141`
+
+**現状**:
+```typescript
+const labor = round50sen(gross * rates.employmentInsuranceEmployeeRate);
+```
+`isSocialInsurance` はチェックされるが `isEmploymentInsurance` が無視されており、
+雇用保険非加入者（週20時間未満の短時間労働者等）にも控除が発生する。
+
+**修正方針**:
+```typescript
+const labor = employee.isEmploymentInsurance
+  ? round50sen(gross * rates.employmentInsuranceEmployeeRate)
+  : 0;
+```
+`isSocialInsurance` のガードと同じパターンで分岐を追加するだけでよい。
+併せて、育休・産休中の社会保険料免除（後述16番）もこのタイミングで
+同じガード方式（`isSocialInsuranceExempted` 的なフラグ）を追加しておくと二度手間にならない。
+
+---
+
+### 1-2. 月60時間超の割増判定が職場横断で機能しない
+
+**ファイル**: `timeEngine.ts:295-306`（`computeHourlyGross`）
+
+**現状**:
+```typescript
+for (const [id, buckets] of Object.entries(bucketsByWorkplace)) {
+  sum += parseRate(rates[id]) * bucketPaidHours(buckets); // ← 職場ごとに独立判定
+}
+```
+職場Aで30h残業＋職場Bで30h残業＝合計60hでも、各30hが60h未満なので1.25倍のまま。
+労基法は「同一の使用者に対する月内法定外残業の合計」で60h超を判定すべき。
+
+**修正方針**:
+```typescript
+// Step1: 全職場の法定外残業時間を月単位で合算する
+const totalOvertimeMinutesThisMonth = Object.values(bucketsByWorkplace)
+  .flatMap((buckets) => buckets)
+  .reduce((sum, b) => sum + b.overtimeMinutes, 0);
+
+// Step2: 60時間（=3600分）を超えた「時間」だけ1.5倍に差し替える
+// 職場をまたいで発生した残業のうち、どの職場の分から60h超として扱うかは
+// 「時系列順（発生順）」で割り当てるのが素直な実装。
+function splitOvertimeAcrossWorkplaces(
+  bucketsByWorkplace: Record<string, Bucket[]>,
+  monthlyOvertimeThresholdMinutes = 60 * 60
+): Record<string, { under60h: number; over60h: number }> {
+  // 日付順にソートしてから累積し、閾値をまたぐ職場でオーバーフロー分を切り出す
+  const allEntries = Object.entries(bucketsByWorkplace)
+    .flatMap(([workplaceId, buckets]) =>
+      buckets.map((b) => ({ workplaceId, date: b.date, minutes: b.overtimeMinutes }))
+    )
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  const result: Record<string, { under60h: number; over60h: number }> = {};
+  let cumulative = 0;
+
+  for (const entry of allEntries) {
+    result[entry.workplaceId] ??= { under60h: 0, over60h: 0 };
+    const remainingUnder60 = Math.max(0, monthlyOvertimeThresholdMinutes - cumulative);
+    const under60Part = Math.min(entry.minutes, remainingUnder60);
+    const over60Part = entry.minutes - under60Part;
+
+    result[entry.workplaceId].under60h += under60Part;
+    result[entry.workplaceId].over60h += over60Part;
+    cumulative += entry.minutes;
+  }
+
+  return result;
+}
+```
+この関数を`computeHourlyGross`に組み込み、`over60h`分だけ1.5倍（深夜込みなら1.75倍）の
+レートを掛けるように差し替える。同一の派遣元（テナント）配下の全職場を対象に合算すること。
+
+---
+
+### 1-3. OCRエラー行で朝残業が異常計算される
+
+**ファイル**: `timeEngine.ts:97-99`
+
+**現状**:
+```typescript
+const earlyMin = earlyOvertime
+  ? Math.max(0, toMin(stdStart) - toMin(ocrStart))
+  : 0;
+// toMin("--:--") = -1 なので toMin("09:00") - (-1) = 541分（異常値）
+```
+
+**修正方針**:
+```typescript
+const earlyMin = earlyOvertime && ocrStart !== "--:--" && toMin(ocrStart) >= 0
+  ? Math.max(0, toMin(stdStart) - toMin(ocrStart))
+  : 0;
+```
+根本的には `toMin()` 自体が不正入力（`"--:--"`）に対して `-1` という
+「あたかも正常値のような」値を返すのが良くない設計なので、
+`toMin()` の戻り値を `number | null` にして呼び出し側で明示的にハンドリングする方が安全:
+```typescript
+function toMin(time: string): number | null {
+  if (time === "--:--" || !time) return null;
+  const [h, m] = time.split(":").map(Number);
+  return h * 60 + m;
+}
+```
+
+---
+
+### 1-4. 賞与の都道府県選択ロジックが月次と不整合
+
+**ファイル**: `bonusCalc.ts:42-45` vs `payrollInputs.ts:154-163`
+
+**現状**:
+- 月次：実働時間が最長の職場の都道府県を採用
+- 賞与：`DEFAULT_WP_KEY`（w1）固定
+
+**修正方針**: 賞与計算でも月次と同じロジック（実働時間最長の職場、なければ
+直近の月次確定データの職場）を参照する共通関数に切り出す。
+```typescript
+// shared/resolvePrimaryWorkplace.ts として切り出し、月次・賞与の両方から呼ぶ
+function resolvePrimaryWorkplacePrefecture(
+  employeeId: string,
+  periodBuckets: Record<string, Bucket[]>
+): string {
+  let maxHours = -1;
+  let primaryWorkplaceId = DEFAULT_WP_KEY;
+  for (const [workplaceId, buckets] of Object.entries(periodBuckets)) {
+    const hours = buckets.reduce((sum, b) => sum + b.paidMinutes, 0);
+    if (hours > maxHours) {
+      maxHours = hours;
+      primaryWorkplaceId = workplaceId;
+    }
+  }
+  return getWorkplace(primaryWorkplaceId).prefecture;
+}
+```
+
+---
+
+## 優先度2：法令対応として必須
+
+### 2-1. 健保料率マスタが10都道府県のみ
+
+**ファイル**: `constants/rates.ts`（`HEALTH_R7`/`HEALTH_R8`）
+
+職場マスタのUIでは47都道府県選べるのに、料率マスタは10都道府県しかなく、
+残り37都道府県は `FALLBACK_INSURANCE_RATE.healthInsuranceRate = 0.1000`（10%）が
+サイレントに適用されている。これは実害が大きい（協会けんぽの実際の料率は都道府県で
+9.3%〜10.4%程度とばらつきがあり、10%固定は多くの県で不正確）。
+
+**修正方針**:
+1. 協会けんぽの令和8年度都道府県別保険料率表（下記URL）から47都道府県分のデータを取得し、
+   `HEALTH_R8`（および`HEALTH_R7`）を47都道府県フルで埋める。
+   https://www.kyoukaikenpo.or.jp/about/business/insurance_rate/premium_prefectures/r08/
+2. フォールバック値を残す場合も、サイレント適用ではなく「未設定の都道府県です」という
+   警告をUI・計算結果の両方に出すようにする（黙って10%を使わない）。
+
+### 2-2. 月60時間超・週40時間超の職場横断合算
+
+→ 1-2 と同じ修正で解消（設計は上記参照）。
+
+### 2-3. 週40時間超の法定外残業が未判定
+
+**ファイル**: `timeEngine.ts:110-112`
+
+**現状**:
+```typescript
+buckets.basic = Math.min(8 * 60, remaining) / 60;
+buckets.overtime = Math.max(0, remaining - 8 * 60) / 60;
+```
+1日8時間超のみ判定しており、週40時間超（1日7時間×6日＝週42時間等）を見ていない。
+
+**修正方針**: 日次計算とは別に、週単位で「その週の合計労働時間」を集計し、
+40時間を超えた部分を法定外残業として日次バケットに再配分するロジックを追加する。
+週の起算日（暦週か就業規則の起算日か）を職場マスタに持たせる必要がある。
+
+---
+
+## 優先度3：会計士確認後に実装
+
+### 3-1. 所定休日労働の一律1.25倍
+
+**ファイル**: `timeEngine.ts:138`（`PREMIUM_RATES.scheduledHoliday = 1.25`）
+
+八鍬さんの回答は「フローチャートで6パターンに整理」となっているため、
+別添の残業フローチャートに沿って「週40時間以内に収まる所定休日労働は1.0倍」の
+分岐を追加する。1-2・2-3の週40時間集計ロジックと合わせて実装するのが効率的。
+
+### 3-2. 雇用保険の業種区分
+
+八鍬さん回答：「一般・清酒・建設の3パターンをマスタに持たせる」。
+`Workplace`または`Contract`マスタに `industryCategory: "general" | "sake" | "construction"` を追加し、
+雇用保険料率テーブルを区分別に持つ。
+
+### 3-3. 住民税の月割（6月と7月以降で金額が異なる）
+
+八鍬さん回答：「初月と2ヶ月目以降の2つの金額を登録する」。
+`residentTax` を単一値から `{ firstMonthAmount: number; subsequentMonthAmount: number }` に変更。
+
+---
+
+## 優先度4：次フェーズ対応（今回は着手しない）
+
+- OCR本体（打刻画像→時刻変換）の実装
+- 標準報酬月額の定時決定・随時改定の自動算定
+- 健保料率の本社一括適用
+- 二以上事業所勤務者の社会保険按分
+- 賞与の年4回以上支給時の標準報酬扱い
+
+---
+
+## そのほかの自己完結型の軽微な修正（まとめて対応可）
+
+### computeHourlyGross の端数処理（Math.round）
+
+**ファイル**: `timeEngine.ts:305`
+```typescript
+return Math.round(sum); // 四捨五入
+```
+他の端数処理ルール（社保→50銭ルール、所得税→切り捨て or 10円未満四捨五入）と
+整合しているか要確認。総支給額の端数処理として四捨五入で問題なければこのままでよいが、
+方針をコードコメントで明記しておく。
+
+### ビット演算 `| 0` の置き換え
+
+**ファイル**: `timeEngine.ts:94`
+```typescript
+const grossMin = (calcHours(effectiveStart, effectiveEnd) * 60) | 0;
+```
+`| 0` は負の数で `Math.floor` と挙動が異なる（`-1.5 | 0` は `-1`、`Math.floor(-1.5)` は `-2`）。
+不正な打刻で負値が返るケースの安全性のため、明示的に置き換える：
+```typescript
+const grossMin = Math.floor(calcHours(effectiveStart, effectiveEnd) * 60);
+```
+
+### 賞与特例1の二重切り捨て
+
+**ファイル**: `bonusTaxCalculator.ts:108-109`
+```typescript
+const monthly = calculateIncomeTax(Math.floor(bonusAfterSI / BONUS_PERIOD_MONTHS));
+return { incomeTax: monthly * BONUS_PERIOD_MONTHS, ... };
+```
+国税庁規定の手順は「(賞与-社保)÷6の円未満切捨て→月額表→×6」。
+`calculateIncomeTax`内部でも切り捨て（甲欄なら10円未満四捨五入）を行っているため、
+二重処理になっている。実害は軽微（数円のズレの可能性）だが、
+`Math.floor(bonusAfterSI / BONUS_PERIOD_MONTHS)` を渡す前に切り捨てず、
+内部の丸めだけに任せる形に統一する。
+
+---
+
+## 未回答の設計判断（実装前に八鍬さん確認が必要）
+
+- 賞与確定ロックの前提条件（前月月次のロックを必須にするか）→ 八鍬さん回答：「ロック必須が望ましい」で決着済み。実装に反映する。
+- 賞与の前月給与が未確定（draft）のときの運用 → 八鍬さん回答：「前月給与がない人にいきなり賞与を払うことは考えられないため考慮不要」で決着済み。
+
+この2点は既に回答が出ているので、優先度1〜2の実装と合わせてコードに反映してほしい。
