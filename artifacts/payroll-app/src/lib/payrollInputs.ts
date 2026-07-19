@@ -24,6 +24,7 @@ import {
   DEFAULT_WP_KEY,
   seedTimecardRows,
   computeBucketsByWorkplace,
+  computeWeekCarryIn,
   computeHoursByWorkplace,
   countDaysByWorkplace,
   totalNetHours,
@@ -56,6 +57,34 @@ function keys(employeeId: string, year: number, month: number) {
     payType: `payType_${suffix}`,
     monthlySalary: `monthlySalary_${suffix}`,
   };
+}
+
+/**
+ * 前月のタイムカード行を読み出す共有ヘルパー（週40h持ち越し・出勤日数引き継ぎ用）。
+ * localStorage に保存済みの行があればそれを、空配列や未保存なら前月ダミーデータの
+ * シード行を返す。PayrollTab と payrollInputs の両方で必ずこれを使うこと
+ * （フォールバック条件が食い違うと両タブの週40h判定が乖離する）。
+ */
+export function loadPrevMonthTimecardRows(
+  employeeId: string,
+  year: number,
+  month: number,
+  workplaces: Record<string, WorkplaceDef>,
+): TimecardRow[] {
+  const prevDate = new Date(year, month - 2, 1);
+  const py = prevDate.getFullYear();
+  const pm = prevDate.getMonth() + 1;
+  const key = keys(employeeId, py, pm).timecard;
+  try {
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(key) : null;
+    if (raw) {
+      const parsed = JSON.parse(raw) as TimecardRow[];
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch {
+    /* フォールバックへ */
+  }
+  return seedTimecardRows(getTimecardEntries(employeeId, py, pm), workplaces);
 }
 
 export interface MonthComputation {
@@ -130,8 +159,11 @@ export function loadEmployeeMonthComputation(
     normalizeAllowance(a),
   );
 
-  // ── 総支給の算出（PayrollTab と同一の純粋関数を使用） ──
-  const bucketsByWorkplace = computeBucketsByWorkplace(timecardRows, workplaces);
+  // ── 総支給の算出（PayrollTab と同一の純粋関数を使用) ──
+  // 週40hカウンターの前月末持ち越し（共有ヘルパーで PayrollTab と完全一致）
+  const prevTimecardRows = loadPrevMonthTimecardRows(employeeId, year, month, workplaces);
+  const weekCarryIn = computeWeekCarryIn(prevTimecardRows, workplaces);
+  const bucketsByWorkplace = computeBucketsByWorkplace(timecardRows, workplaces, weekCarryIn);
   const hoursByWorkplace = computeHoursByWorkplace(bucketsByWorkplace);
   const daysByWorkplace = countDaysByWorkplace(timecardRows, workplaces);
   const totalHours = totalNetHours(hoursByWorkplace);

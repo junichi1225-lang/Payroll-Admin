@@ -36,6 +36,10 @@ import {
   rowWorked,
   countDaysByWorkplace,
   computeBucketsByWorkplace,
+  computeWeekCarryIn,
+} from "@/lib/timeEngine";
+import { loadPrevMonthTimecardRows } from "@/lib/payrollInputs";
+import {
   computeHoursByWorkplace,
   computeHourlyGross,
   computeDailyGross,
@@ -475,7 +479,7 @@ function BucketSummary({ buckets }: { buckets: TimeBuckets }) {
   const items = [
     { label: "基本労働", value: buckets.basic, icon: Briefcase, style: "text-slate-700 bg-slate-50 border-slate-200" },
     { label: "時間外", value: buckets.overtime, icon: Zap, style: "text-orange-700 bg-orange-50 border-orange-200" },
-    { label: "朝残業", value: buckets.earlyOvertime, icon: Sunrise, style: "text-amber-700 bg-amber-50 border-amber-200" },
+    { label: "60h超残業", value: buckets.overtimeOver60, icon: Sunrise, style: "text-amber-700 bg-amber-50 border-amber-200" },
     { label: "深夜労働", value: buckets.lateNight, icon: Moon, style: "text-indigo-700 bg-indigo-50 border-indigo-200" },
   ];
   const holidayTotal = buckets.legalHolidayWork + buckets.scheduledHolidayWork;
@@ -2428,10 +2432,26 @@ export function PayrollTab({
     setManualOpen(false);
   };
 
+  const prevDate = new Date(year, month - 2, 1);
+  const prevYM = toYearMonth(prevDate.getFullYear(), prevDate.getMonth() + 1);
+
+  // 前月の打刻行（週40h持ち越し・日給制の「出勤日数を引き継ぐ」用）。
+  // 給与確定タブ（payrollInputs）と共有のヘルパーで読み出し、両タブの判定を一致させる。
+  const prevTimecardRows = useMemo<TimecardRow[]>(
+    () => loadPrevMonthTimecardRows(employeeId, year, month, workplaces),
+    [employeeId, year, month, workplaces],
+  );
+
+  // 月初の週が前月から跨る場合の週40hカウンター持ち越し（給与確定タブと同一ロジック）
+  const weekCarryIn = useMemo(
+    () => computeWeekCarryIn(prevTimecardRows, workplaces),
+    [prevTimecardRows, workplaces],
+  );
+
   // 職場別 5区分集計 (workplaces / timecardRows 変更で再計算)。timeEngine と共用。
   const bucketsByWorkplace = useMemo<Record<string, TimeBuckets>>(
-    () => computeBucketsByWorkplace(timecardRows, workplaces),
-    [timecardRows, workplaces],
+    () => computeBucketsByWorkplace(timecardRows, workplaces, weekCarryIn),
+    [timecardRows, workplaces, weekCarryIn],
   );
 
   // 職場別の正味労働時間
@@ -2498,8 +2518,6 @@ export function PayrollTab({
 
   // 前月給与の取得（PayrollResultDB → なければモックダミー）
   const yyyymm = toYearMonth(year, month);
-  const prevDate = new Date(year, month - 2, 1);
-  const prevYM = toYearMonth(prevDate.getFullYear(), prevDate.getMonth() + 1);
 
   // 前月の職場別時給（"前月と同様"用）。前月の localStorage を参照し、無ければ既定時給。
   const prevRatesKey = `hourlyRates_${DEFAULT_TENANT_ID}_${employeeId}_${prevDate.getFullYear()}_${prevDate.getMonth() + 1}`;
@@ -2544,27 +2562,6 @@ export function PayrollTab({
     }
     return init;
   }, [prevDailyRatesKey, workplaces]);
-
-  // 前月の打刻行（日給制の「出勤日数を引き継ぐ」用）。
-  // 前月を実際に開いて保存された localStorage を優先し、無ければ前月ダミーデータで補完する。
-  // （日給単価が prevDailyRates で既定値に補完されるのと同じ方針で、未訪問月でも引き継げる）
-  const prevTimecardKey = `timecard_${DEFAULT_TENANT_ID}_${employeeId}_${prevDate.getFullYear()}_${prevDate.getMonth() + 1}`;
-  const prevTimecardRows = useMemo<TimecardRow[]>(() => {
-    if (typeof window !== "undefined") {
-      try {
-        const raw = window.localStorage.getItem(prevTimecardKey);
-        if (raw) {
-          const parsed = JSON.parse(raw) as TimecardRow[];
-          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-        }
-      } catch {
-        /* フォールバックへ */
-      }
-    }
-    const entries = getTimecardEntries(employeeId, prevDate.getFullYear(), prevDate.getMonth() + 1);
-    return seedRows(entries, workplaces);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [prevTimecardKey, employeeId, workplaces]);
 
   // 前月の職場別出勤日数（引き継ぎ可否の判定・件数表示に使用）
   const prevDaysByWorkplace = useMemo<Record<string, number>>(

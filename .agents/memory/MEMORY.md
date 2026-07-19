@@ -4,5 +4,5 @@
 - [協会けんぽ health-rate sources](payroll-kenpo-rate-sources.md) — verify 健保料率 ONLY against official per-prefecture PDFs; AI/blog summaries are contradictory & wrong. 東京 R7=9.91 (not 9.87); 神奈川 R7=R8=9.92 据置.
 - [Japanese bonus (賞与) payroll](payroll-bonus.md) — independent entity (own DB keys/computeBonus/tab); run snapshots participant employeeIds; 算出率表 from NTA PDF (web summaries wrong); 573万 cap sums healthBaseStandardBonus.
 - [Payroll dual-tab calc unification](payroll-dual-tab-unification.md) — simulator & finalization tabs MUST share computePayroll + timeEngine + resolveRates; any input affecting gross/deductions must be wired into both PayrollTab memos AND payrollInputs adapter, or tabs silently diverge.
-- [Payroll overtime/late-night/holiday premiums](payroll-overtime-premiums.md) — hourly gross = rate×bucketPaidHours (1.25/1.50/1.35/1.25 + 深夜 +0.25 additive, 60h pool); 時給制のみ、日給/月給は割増なし(SPEC).
+- [Payroll overtime premiums (flowchart)](payroll-overtime-premiums.md) — chronological 判定①〜③: cross-workplace day8h/week40h(carry-in)/month60h counters; 所定休日・朝残業に自動割増なし; 深夜+0.25 additive; 時給制のみ.
 - [Income tax — 令和8年分 module](payroll-income-tax-status.md) — payroll-core/incomeTax.ts owns tax base & rounding (甲=電算機特例, 乙<105k=3.063%, 乙≥105k throws→taxError blocks lock); no re-rounding in computePayroll.

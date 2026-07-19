@@ -1,35 +1,38 @@
 ---
 name: Payroll overtime/late-night/holiday premiums
-description: How legal wage premiums (割増) are applied to gross, the 60h rule, and the hourly-only scope limitation.
+description: Flowchart-based overtime classification (判定①〜③), cross-workplace counters, and the hourly-only scope limitation.
 ---
 
-# Payroll premiums (割増) in gross calc
+# Payroll premiums (割増) — user-flowchart compliant
 
-Hourly gross is NOT a flat Σ(rate×hours). It is `rate × bucketPaidHours(buckets)` where
-`bucketPaidHours` (in `timeEngine.ts`) converts the 6 time buckets into premium-weighted
-"賃金換算時間":
-- basic ×1.00
-- 法定外残業 (overtime + earlyOvertime): first 60h ×1.25, hours over 60 ×1.50
-- 所定休日労働 (scheduledHolidayWork) ×1.25 (treated as 時間外)
-- 法定休日労働 (legalHolidayWork) ×1.35
-- 深夜 (lateNight) ×0.25 **additive** — it is a separate overlap bucket (22:00–05:00) layered
-  on top of basic/overtime/holiday, so holiday+深夜 = 1.35+0.25 = 1.60 automatically.
+Classification lives in `timeEngine.ts` `computeBucketsByWorkplace`, which processes all
+rows **chronologically** (overnight shifts split at midnight, breaks pro-rated per segment)
+and shares these counters **across all workplaces**:
+- 日8h counter (same-day multi-workplace hours are aggregated)
+- 週40h counter (Sunday-start weeks; daily-over-8h minutes and legal-holiday work excluded;
+  month-boundary carry-in via `computeWeekCarryIn(prevMonthRows)` — BOTH PayrollTab and
+  payrollInputs must pass it or tabs diverge)
+- 月60h counter (monthly cumulative 法定外残業; over 60h → ×1.50)
 
-**60h rule:** judged on the **monthly per-workplace** 法定外残業 total. Because the premium is
-linear, `min(pool,60)×1.25 + max(0,pool−60)×1.50` is exact regardless of chronological order.
-法定休日労働 hours do NOT count toward the 60h overtime pool.
+Decision flow (判定①→②→③):
+1. 法定休日 → ×1.35 (excluded from 40h/60h counters)
+2. 日8h超 OR 週40h超 → 法定外残業 ×1.25 (≤60h) / ×1.50 (>60h)
+3. Otherwise (所定内・法定内残業) → ×1.00 — 所定休日 work and 朝残業 get NO automatic
+   premium; they flow through 判定② like ordinary work time. `scheduledHolidayWork`
+   bucket is informational only (already classified into basic/overtime; not in
+   bucketNetHours or pay).
 
-**Why earlyOvertime is in the 法定外 pool:** this app treats 朝残業 (clock-in before scheduled
-start) as 時間外 by design (`includeEarlyOvertime` per workplace), so it gets 1.25 and joins the
-60h pool.
+深夜 (22:00–05:00) is a separate overlap bucket, +0.25 **additive** on any category
+(legal-holiday night = 1.35+0.25 = 1.60).
+
+`bucketPaidHours` just multiplies pre-classified buckets by rates — the 60h split is done
+during classification, NOT there. Buckets stay per-workplace so gross = Σ(rate ×
+bucketPaidHours) per workplace, while counters are global.
+
+Tests: `src/lib/timeEngine.test.ts` covers every flowchart branch incl. midnight split and
+week carry-in.
 
 ## Scope limitation (documented SPEC)
 Premiums apply to **時給制 (hourly) only**. `computeDailyGross` (日給制) and 月給制 add NO
 premium — you can't derive a unique hourly unit from a daily/monthly wage in this mock.
-**Why:** intentional scope cut; documented in the `computeDailyGross` doc comment. If daily/monthly
-premiums are ever needed, define an hourly-equivalent from 所定労働時間 first.
-
-## computeHourlyGross signature
-Takes `bucketsByWorkplace` (NOT pre-summed net hours) so premiums can be computed. Both
-PayrollTab and `payrollInputs.ts` must pass `bucketsByWorkplace`. `bucketNetHours` still exists
-for display of actual worked hours (no premium).
+**Why:** intentional scope cut; documented in the `computeDailyGross` doc comment.
