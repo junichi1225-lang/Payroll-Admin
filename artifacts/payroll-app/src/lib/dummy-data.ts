@@ -173,6 +173,22 @@ export interface PayrollResult {
    * レガシーデータでは undefined。
    */
   allowances?: AllowanceItem[];
+  /**
+   * 源泉所得税の計算前提スナップショット（税額表の年分・甲欄/乙欄・扶養等の数）。
+   * どの前提で税額が計算されたかを確定後も再現できるように保持する。
+   * レガシーデータでは undefined。
+   */
+  taxSnapshot?: PayrollTaxSnapshot;
+}
+
+/** 源泉所得税の計算前提スナップショット。 */
+export interface PayrollTaxSnapshot {
+  /** 適用した税額表の年分（例: 2026 = 令和8年分） */
+  taxYear: number;
+  /** 適用した税額表の欄区分 */
+  taxCategory: TaxCategory;
+  /** 計算に使用した源泉控除対象親族の数（V1 は常に 0） */
+  dependentCount: number;
 }
 
 // ─────────────────────────────────────────────
@@ -332,19 +348,29 @@ export interface AllowanceItem {
   id: string;
   /** 手当の種類（例: 通勤手当・役職手当） */
   type: string;
-  /** 支給額（円） */
-  amount: number;
+  /** 課税額（円）。所得税の課税ベースに含める金額。 */
+  taxableAmount: number;
   /**
-   * 課税対象か。true=課税手当（所得税の課税ベースに含む）、
-   * false=非課税手当（通勤手当など。所得税の課税ベースから除く）。
-   * 旧データ（未設定）は読み込み時に種類から既定値で補完する。
+   * 非課税額（円）。所得税の課税ベースから除く金額（例: 通勤手当の非課税部分）。
+   * 非課税限度額の上限判定はシステムでは行わない。金額の妥当性は
+   * 入力者（給与担当者）の責任とする。
    */
-  taxable: boolean;
-  /**
-   * ユーザーが課税/非課税を手動で切り替えたか。true の場合は種類変更時に
-   * 既定値で上書きしない（手動設定を尊重する）。
-   */
-  taxableTouched?: boolean;
+  nonTaxableAmount: number;
+}
+
+/** 手当1件の支給額（課税額＋非課税額）。 */
+export function allowanceTotal(a: AllowanceItem): number {
+  return (a.taxableAmount || 0) + (a.nonTaxableAmount || 0);
+}
+
+/** 手当リストの支給額合計。 */
+export function allowancesSum(items: AllowanceItem[]): number {
+  return items.reduce((s, a) => s + allowanceTotal(a), 0);
+}
+
+/** 手当リストの非課税額合計（所得税の課税ベースから除く金額）。 */
+export function nonTaxableAllowancesSum(items: AllowanceItem[]): number {
+  return items.reduce((s, a) => s + (a.nonTaxableAmount || 0), 0);
 }
 
 /** 手当の種類プリセット（入力補助用のサジェスト候補） */
@@ -358,29 +384,42 @@ export const ALLOWANCE_TYPE_PRESETS = [
   "その他手当",
 ] as const;
 
-/** 通勤手当か（種類名で判定）。通勤手当は原則非課税。 */
-export function isCommuteAllowance(type: string): boolean {
-  return type.includes("通勤");
-}
-
-/** 手当の種類から課税/非課税の既定値を返す（通勤手当=非課税・その他=課税）。 */
-export function defaultTaxableFor(type: string): boolean {
-  return !isCommuteAllowance(type);
+/** 旧形式（〜v2）の手当レコード。localStorage 上のレガシーデータ読込にのみ使用。 */
+interface LegacyAllowanceItem {
+  id: string;
+  type: string;
+  amount: number;
+  taxable?: boolean;
+  taxableTouched?: boolean;
 }
 
 /**
  * 手当 1件を正規化する（旧データ migration）。
- * `taxable` 未設定の旧レコードは種類から既定値を補完する。
+ * - 新形式（taxableAmount / nonTaxableAmount）はそのまま返す。
+ * - 旧形式（amount + taxable フラグ）は、保存済みの taxable フラグに従って
+ *   全額を課税額または非課税額に振り分ける。フラグ未設定の最古データのみ、
+ *   旧仕様の既定値（種類名に「通勤」を含む＝非課税）を移行時に限り適用する。
+ *   ※ 名称による課税/非課税判定は移行処理以外では行わない。
  */
-export function normalizeAllowance(a: Partial<AllowanceItem> & { id: string; type: string; amount: number }): AllowanceItem {
+export function normalizeAllowance(
+  a: Partial<AllowanceItem> & Partial<LegacyAllowanceItem> & { id: string; type: string },
+): AllowanceItem {
+  if (typeof a.taxableAmount === "number" || typeof a.nonTaxableAmount === "number") {
+    return {
+      id: a.id,
+      type: a.type,
+      taxableAmount: a.taxableAmount || 0,
+      nonTaxableAmount: a.nonTaxableAmount || 0,
+    };
+  }
+  const amount = typeof a.amount === "number" ? a.amount : 0;
+  const legacyTaxable =
+    typeof a.taxable === "boolean" ? a.taxable : !a.type.includes("通勤");
   return {
     id: a.id,
     type: a.type,
-    amount: a.amount,
-    taxable: typeof a.taxable === "boolean" ? a.taxable : defaultTaxableFor(a.type),
-    // 手動切り替えフラグは保持する。種類変更時の既定値上書きを抑止する判定に使うため、
-    // 正規化（毎レンダー実行）で欠落するとユーザーの課税/非課税の手動設定が失われる。
-    ...(a.taxableTouched ? { taxableTouched: true } : {}),
+    taxableAmount: legacyTaxable ? amount : 0,
+    nonTaxableAmount: legacyTaxable ? 0 : amount,
   };
 }
 

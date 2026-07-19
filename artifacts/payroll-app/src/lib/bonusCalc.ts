@@ -26,13 +26,13 @@ import { DEFAULT_WP_KEY } from "./timeEngine";
 
 /**
  * 非課税手当の合計（社保控除後給与＝課税ベースから除く）。
- * `taxable` 未設定の旧スナップショットは normalizeAllowance で種類から既定値を補完し、
- * 月次（loadEmployeeMonthComputation）と同一の課税ベース算定に揃える。
+ * 旧形式スナップショット（amount + taxable フラグ）は normalizeAllowance で
+ * 新形式（課税額/非課税額）へ移行し、月次と同一の課税ベース算定に揃える。
  */
 function nonTaxableTotal(allowances?: AllowanceItem[]): number {
   return (allowances ?? [])
     .map((a) => normalizeAllowance(a))
-    .reduce((s, a) => s + (a.taxable ? 0 : a.amount || 0), 0);
+    .reduce((s, a) => s + (a.nonTaxableAmount || 0), 0);
 }
 
 /**

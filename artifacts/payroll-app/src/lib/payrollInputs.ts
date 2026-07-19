@@ -16,6 +16,8 @@ import {
   TimecardEntry,
   getTimecardEntries,
   normalizeAllowance,
+  allowancesSum,
+  nonTaxableAllowancesSum,
 } from "./dummy-data";
 import {
   TimecardRow,
@@ -28,7 +30,7 @@ import {
   computeHourlyGross,
   computeDailyGross,
 } from "./timeEngine";
-import { computePayroll, DeductionBreakdown } from "./payroll-core";
+import { computePayroll, DeductionBreakdown, PayrollTaxMeta } from "./payroll-core";
 
 type PayType = "monthly" | "daily" | "hourly";
 
@@ -75,6 +77,13 @@ export interface MonthComputation {
   allowances: AllowanceItem[];
   /** 社会保険料率の引き当てに使用した都道府県 */
   prefecture: string;
+  /** 源泉所得税の計算前提（税額表年分・甲欄/乙欄・扶養数） */
+  taxMeta: PayrollTaxMeta;
+  /**
+   * 所得税が計算できなかった場合のエラー（例: 乙欄・105,000円以上は未実装）。
+   * 設定時は incomeTax=0 のままなので、この結果で給与を確定してはならない。
+   */
+  taxError?: string;
 }
 
 /**
@@ -129,11 +138,8 @@ export function loadEmployeeMonthComputation(
   const hourlyGross = computeHourlyGross(bucketsByWorkplace, workplaceRates);
   const dailyGross = computeDailyGross(daysByWorkplace, workplaceDailyRates);
 
-  const allowancesTotal = allowances.reduce((s, a) => s + (a.amount || 0), 0);
-  const nonTaxableAllowanceTotal = allowances.reduce(
-    (s, a) => s + (a.taxable ? 0 : a.amount || 0),
-    0,
-  );
+  const allowancesTotal = allowancesSum(allowances);
+  const nonTaxableAllowanceTotal = nonTaxableAllowancesSum(allowances);
 
   const monthlyRaw = parseInt(monthlySalaryInput.replace(/[^0-9]/g, ""), 10) || 0;
   const effectiveHourlyRate = totalHours > 0 ? Math.round(hourlyGross / totalHours) : 0;
@@ -175,6 +181,7 @@ export function loadEmployeeMonthComputation(
           standardRemuneration: employee.standardRemuneration,
           birthDate: employee.birthDate,
           residentTax: employee.residentTax,
+          taxCategory: employee.taxCategory,
         }
       : undefined,
   });
@@ -194,5 +201,7 @@ export function loadEmployeeMonthComputation(
     deductions: computation.deductions,
     allowances,
     prefecture: primaryPrefecture,
+    taxMeta: computation.taxMeta,
+    ...(computation.taxError ? { taxError: computation.taxError } : {}),
   };
 }

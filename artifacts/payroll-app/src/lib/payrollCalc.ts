@@ -5,7 +5,7 @@
 // スナップショット (PayrollResult) 用の薄いラッパーと ID/年月ヘルパーを提供する。
 
 import { AllowanceItem, EmployeeMaster, SalaryType, WorkplaceDef } from "./dummy-data";
-import { DeductionBreakdown } from "./payroll-core";
+import { DeductionBreakdown, PayrollTaxMeta } from "./payroll-core";
 import { loadEmployeeMonthComputation } from "./payrollInputs";
 
 export interface PayrollSummary {
@@ -19,6 +19,10 @@ export interface PayrollSummary {
   deductions: DeductionBreakdown;
   /** 当月の手当（給与明細の支給項目内訳用） */
   allowances: AllowanceItem[];
+  /** 源泉所得税の計算前提（確定スナップショット用） */
+  taxMeta: PayrollTaxMeta;
+  /** 所得税が計算できなかった場合のエラー（設定時は確定不可） */
+  taxError?: string;
 }
 
 /**
@@ -51,6 +55,8 @@ export function computeMonthSummary(
     netPay: comp.netPay,
     deductions: comp.deductions,
     allowances: comp.allowances,
+    taxMeta: comp.taxMeta,
+    ...(comp.taxError ? { taxError: comp.taxError } : {}),
   };
 }
 

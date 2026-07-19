@@ -10,7 +10,9 @@
  * - 端数処理を本モジュールに集約:
  *     - 社会保険（健康・介護・厚年・支援金）と雇用保険の被保険者負担は
  *       労使折半後に「50銭ルール」（端数50銭以下=切り捨て / 50銭超=切り上げ）。
- *     - 所得税は円未満切り捨て。
+ *     - 所得税は令和8年分モジュール（incomeTax.ts）内で丸め（甲欄=10円未満四捨五入、
+ *       乙欄<105,000円=円未満切り捨て）まで実施済みの値を用いる。本モジュールでは
+ *       追加の丸めを行わない（floorYen の二重適用禁止）。
  *
  * 【負担ベース】
  * - 健康・介護・厚年・子ども子育て支援金: 標準報酬月額ベース（料率は労使合計→×0.5）。
@@ -20,7 +22,7 @@
 
 import { resolveRates } from "@/lib/constants/rates";
 import { isNursingCareInsuranceTarget } from "@/lib/insurance";
-import { calculateIncomeTax } from "@/lib/taxCalculator";
+import { calculateIncomeTax } from "./incomeTax";
 
 // ───────────────────────────────────────────────────────────
 // 端数処理
@@ -48,6 +50,9 @@ export function floorYen(value: number): number {
 // 入出力型
 // ───────────────────────────────────────────────────────────
 
+/** 源泉所得税の税額表 欄区分（従業員マスタの自己申告に準ずる）。 */
+export type PayrollTaxCategory = "甲欄" | "乙欄";
+
 /** 計算対象の従業員マスタ部分集合（コアが必要とするフィールドのみ）。 */
 export interface PayrollEmployeeInput {
   /** 社会保険加入フラグ */
@@ -58,6 +63,8 @@ export interface PayrollEmployeeInput {
   birthDate: string;
   /** 住民税（決定通知書の月額・円） */
   residentTax: number;
+  /** 税額表の欄区分（未指定は甲欄扱い） */
+  taxCategory?: PayrollTaxCategory;
 }
 
 export interface ComputePayrollInput {
@@ -96,10 +103,28 @@ export interface DeductionBreakdown {
   isNursingCareTarget: boolean;
 }
 
+/** 源泉所得税の計算前提（確定スナップショット保存用）。 */
+export interface PayrollTaxMeta {
+  /** 適用した税額表の年分（2026 = 令和8年分） */
+  taxYear: number;
+  /** 適用した欄区分 */
+  taxCategory: PayrollTaxCategory;
+  /** 計算に使用した源泉控除対象親族の数（V1 は常に 0） */
+  dependentCount: number;
+}
+
 export interface PayrollComputation {
   gross: number;
   deductions: DeductionBreakdown;
   netPay: number;
+  /** 源泉所得税の計算前提 */
+  taxMeta: PayrollTaxMeta;
+  /**
+   * 所得税が計算できなかった場合のエラーメッセージ（例: 乙欄・105,000円以上は未実装）。
+   * 設定されている場合、incomeTax は 0 のままであり、この計算結果で給与を
+   * 確定（ロック）してはならない。UI は必ずエラーを表示すること。
+   */
+  taxError?: string;
 }
 
 const EMPTY_DEDUCTIONS: DeductionBreakdown = {
@@ -119,8 +144,11 @@ const EMPTY_DEDUCTIONS: DeductionBreakdown = {
 export function computePayroll(input: ComputePayrollInput): PayrollComputation {
   const { targetYearMonth, prefecture, gross, nonTaxableAllowanceTotal, employee } = input;
 
+  const taxCategory: PayrollTaxCategory = employee?.taxCategory ?? "甲欄";
+  const taxMeta: PayrollTaxMeta = { taxYear: 2026, taxCategory, dependentCount: 0 };
+
   if (gross <= 0) {
-    return { gross: Math.max(0, gross), deductions: { ...EMPTY_DEDUCTIONS }, netPay: Math.max(0, gross) };
+    return { gross: Math.max(0, gross), deductions: { ...EMPTY_DEDUCTIONS }, netPay: Math.max(0, gross), taxMeta };
   }
 
   const rates = resolveRates(prefecture, targetYearMonth);
@@ -142,9 +170,28 @@ export function computePayroll(input: ComputePayrollInput): PayrollComputation {
 
   const socialInsuranceTotal = health + nursingCare + pension + childcare + labor;
 
-  // 所得税: 課税ベース = 総支給 − 非課税手当 − 社会保険料（被保険者負担）
-  const taxableBase = Math.max(0, gross - Math.max(0, nonTaxableAllowanceTotal) - socialInsuranceTotal);
-  const incomeTax = floorYen(calculateIncomeTax(taxableBase));
+  // 所得税: 令和8年分モジュール（甲欄=電算機特例・10円未満四捨五入は内部で実施）。
+  // 課税ベース = 総支給 − 非課税手当 − 社会保険料（被保険者負担）を内部で算出する。
+  // 乙欄・社保控除後105,000円以上は未実装のため例外が投げられる。サイレントに
+  // 握りつぶさず、taxError として呼び出し側（UI）へ伝搬させる。
+  let incomeTax = 0;
+  let taxError: string | undefined;
+  try {
+    incomeTax = calculateIncomeTax({
+      taxableAllowanceTotal: gross,
+      nonTaxableCommutingAllowance: Math.max(0, nonTaxableAllowanceTotal),
+      socialInsuranceDeduction: socialInsuranceTotal,
+      taxTableColumn: taxCategory === "乙欄" ? "otsu" : "kou",
+      hasSpouseDeduction: false, // V1: 配偶者控除は未対応（常に false）
+      dependentCount: taxMeta.dependentCount, // V1: 扶養親族は常に 0
+      taxYear: 2026,
+    }).incomeTax;
+  } catch (e) {
+    taxError =
+      e instanceof Error
+        ? e.message
+        : "所得税を計算できませんでした（未対応のケースです）。";
+  }
 
   // 住民税: マスタの決定額をそのまま引き当て
   const residentTax = employee?.residentTax ?? 0;
@@ -158,6 +205,8 @@ export function computePayroll(input: ComputePayrollInput): PayrollComputation {
       incomeTax, residentTax, socialInsuranceTotal, total, isNursingCareTarget,
     },
     netPay: Math.max(0, gross - total),
+    taxMeta,
+    ...(taxError ? { taxError } : {}),
   };
 }
 

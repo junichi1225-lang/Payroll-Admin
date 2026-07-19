@@ -30,7 +30,8 @@ BOTH the PayrollTab memos AND `payrollInputs.loadEmployeeMonthComputation`.
 ## Rounding (centralized in payroll-core)
 - Social (health/nursing/pension/childcare, on standard remuneration ×0.5) and employment
   insurance (on gross) → `round50sen` (≤0.5 floor, >0.5 ceil).
-- Income tax → `floorYen`. Tax base = `gross − nonTaxableAllowances − socialInsuranceTotal`.
+- Income tax: rounding is done INSIDE `payroll-core/incomeTax.ts` (甲欄 10円未満四捨五入 etc.);
+  `computePayroll` must not re-round. Tax base = `gross − nonTaxableAllowances − socialInsuranceTotal`.
 
 ## Acceptance harness
 `scripts/acceptance.mjs` bundles the TS via esbuild's JS API (with a `@/` alias plugin) and
@@ -38,7 +39,8 @@ asserts the spec case: 300k / 東京 / 40-64 / R8(2026-04) / 甲 / 扶養0 →
 health 14775, nursing 2430, pension 27450, childcare 345, labor 1500, social 46500, taxBase 253500.
 Run: `node scripts/acceptance.mjs` from the payroll-app dir.
 
-## Allowance taxable flag
-`AllowanceItem.taxable` (通勤=非課税). `normalizeAllowance` runs every render and MUST preserve
-`taxableTouched`, else a user's manual 課税/非課税 toggle gets overwritten by the type-based
-default on the next type edit.
+## Allowance model
+`AllowanceItem` is `{id, type, taxableAmount, nonTaxableAmount}` (two ¥ inputs in the UI; the old
+`{amount, taxable}` flag model is gone). `normalizeAllowance` migrates legacy records (taxable flag,
+else 通勤-name heuristic — migration only). Use `allowancesSum` / `nonTaxableAllowancesSum` /
+`allowanceTotal` helpers; never sum `.amount` directly.

@@ -18,7 +18,8 @@ import {
   DEFAULT_DAILY_RATES,
   AllowanceItem,
   ALLOWANCE_TYPE_PRESETS,
-  defaultTaxableFor,
+  allowancesSum,
+  nonTaxableAllowancesSum,
   normalizeAllowance,
 } from "@/lib/dummy-data";
 import { buildPayrollResultId, toYearMonth } from "@/lib/payrollCalc";
@@ -1082,22 +1083,13 @@ function AllowancesSection({
   onChange: (next: AllowanceItem[]) => void;
   disabled?: boolean;
 }) {
-  const total = allowances.reduce((s, a) => s + (a.amount || 0), 0);
+  const total = allowancesSum(allowances);
 
   const addAllowance = () => {
-    onChange([...allowances, { id: newAllowanceId(), type: "", amount: 0, taxable: defaultTaxableFor("") }]);
+    onChange([...allowances, { id: newAllowanceId(), type: "", taxableAmount: 0, nonTaxableAmount: 0 }]);
   };
   const updateAllowance = (id: string, patch: Partial<AllowanceItem>) => {
-    onChange(allowances.map((a) => {
-      if (a.id !== id) return a;
-      const next = { ...a, ...patch };
-      // 種類を変更したら課税/非課税の既定値を追従させる（ユーザーが手動切替後は尊重）。
-      if (patch.type !== undefined && patch.taxable === undefined && !a.taxableTouched) {
-        next.taxable = defaultTaxableFor(patch.type);
-      }
-      if (patch.taxable !== undefined) next.taxableTouched = true;
-      return next;
-    }));
+    onChange(allowances.map((a) => (a.id === id ? { ...a, ...patch } : a)));
   };
   const removeAllowance = (id: string) => {
     onChange(allowances.filter((a) => a.id !== id));
@@ -1116,6 +1108,7 @@ function AllowancesSection({
       </div>
       <p className="text-xs text-muted-foreground leading-relaxed">
         通勤手当・役職手当・資格手当などの支給項目を追加すると、総支給額に加算されます。
+        課税額・非課税額を分けて入力してください（通勤手当は非課税限度額まで非課税欄へ）。
       </p>
 
       {allowances.length === 0 ? (
@@ -1137,38 +1130,39 @@ function AllowancesSection({
                 className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-border bg-background text-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all"
               />
               <div className="relative w-28 flex-shrink-0">
-                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm select-none">¥</span>
+                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground select-none">課税</span>
                 <input
                   type="text"
                   inputMode="numeric"
-                  value={a.amount ? a.amount.toLocaleString("ja-JP") : ""}
+                  value={a.taxableAmount ? a.taxableAmount.toLocaleString("ja-JP") : ""}
                   placeholder="0"
                   disabled={disabled}
+                  title="課税対象の手当額（役職手当など）"
                   onChange={(e) => {
                     const d = e.target.value.replace(/[^0-9]/g, "");
-                    updateAllowance(a.id, { amount: d ? parseInt(d, 10) : 0 });
+                    updateAllowance(a.id, { taxableAmount: d ? parseInt(d, 10) : 0 });
                   }}
-                  data-testid="allowance-amount-input"
-                  className="w-full pl-7 pr-3 py-2 rounded-lg border border-border bg-background text-sm text-right tabular-nums text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all"
+                  data-testid="allowance-taxable-amount-input"
+                  className="w-full pl-9 pr-2 py-2 rounded-lg border border-border bg-background text-sm text-right tabular-nums text-foreground focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary/50 transition-all"
                 />
               </div>
-              <button
-                type="button"
-                onClick={() => updateAllowance(a.id, { taxable: !a.taxable })}
-                disabled={disabled}
-                aria-pressed={!a.taxable}
-                aria-label={a.taxable ? "課税手当（切り替えて非課税にする）" : "非課税手当（切り替えて課税にする）"}
-                title="所得税の課税対象に含めるか切り替えます（通勤手当などは非課税）"
-                data-testid="allowance-taxable-toggle"
-                className={cn(
-                  "flex-shrink-0 w-16 h-9 flex items-center justify-center rounded-lg border text-[11px] font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
-                  a.taxable
-                    ? "border-border text-muted-foreground hover:bg-muted"
-                    : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100",
-                )}
-              >
-                {a.taxable ? "課税" : "非課税"}
-              </button>
+              <div className="relative w-28 flex-shrink-0">
+                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] text-emerald-700 select-none">非課税</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={a.nonTaxableAmount ? a.nonTaxableAmount.toLocaleString("ja-JP") : ""}
+                  placeholder="0"
+                  disabled={disabled}
+                  title="非課税の手当額（通勤手当の非課税限度額内など）"
+                  onChange={(e) => {
+                    const d = e.target.value.replace(/[^0-9]/g, "");
+                    updateAllowance(a.id, { nonTaxableAmount: d ? parseInt(d, 10) : 0 });
+                  }}
+                  data-testid="allowance-nontaxable-amount-input"
+                  className="w-full pl-12 pr-2 py-2 rounded-lg border border-emerald-200 bg-emerald-50/40 text-sm text-right tabular-nums text-foreground focus:outline-none focus:ring-2 focus:ring-emerald-300/40 focus:border-emerald-400/60 transition-all"
+                />
+              </div>
               <button
                 type="button"
                 onClick={() => removeAllowance(a.id)}
@@ -1223,6 +1217,8 @@ interface ResultCardProps {
   previousMonth: { gross: number; incomeTax: number };
   isLocked: boolean;
   canLock: boolean;
+  /** 所得税が計算できない場合のエラー（乙欄・105,000円以上など）。設定時は確定不可。 */
+  taxError?: string;
   /** 本体で算出した控除額（給与確定・サマリー表示に使用） */
   deductions: DeductionBreakdown;
   onLock: (deductions: DeductionBreakdown) => void;
@@ -1358,9 +1354,10 @@ function DeductionRow({ label, amount, hint, faded }: { label: string; amount: n
 
 function ResultCard({
   grossAmount, baseAmount, allowancesTotal, payType, currentDate, master, employeeName, prefecture,
-  previousMonth, isLocked, canLock, deductions, onLock, onUnlock, timecardRows, onConfirmAllDays,
+  previousMonth, isLocked, canLock, taxError, deductions, onLock, onUnlock, timecardRows, onConfirmAllDays,
 }: ResultCardProps) {
   const hasValue = grossAmount > 0;
+  const lockable = canLock && hasValue && !taxError;
   const currentNet = Math.max(0, grossAmount - deductions.total);
   const prevNet = Math.max(0, previousMonth.gross - previousMonth.incomeTax);
 
@@ -1528,14 +1525,26 @@ function ResultCard({
                 </button>
               );
             })()}
+            {taxError && (
+              <div
+                data-testid="tax-error-banner"
+                className="w-full flex items-start gap-2 px-4 py-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-700 text-xs leading-relaxed"
+              >
+                <Info className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                <p>
+                  <span className="font-bold">所得税を計算できません：</span>
+                  {taxError}
+                </p>
+              </div>
+            )}
             <button
               type="button"
               onClick={() => onLock(deductions)}
-              disabled={!canLock || !hasValue}
+              disabled={!lockable}
               data-testid="lock-month"
               className={cn(
                 "w-full px-5 py-3.5 rounded-xl text-base font-bold transition-all",
-                canLock && hasValue
+                lockable
                   ? "bg-primary text-primary-foreground hover:bg-primary/90 shadow-sm hover:shadow"
                   : "bg-muted text-muted-foreground/50 cursor-not-allowed",
               )}
@@ -2455,15 +2464,12 @@ export function PayrollTab({
     [daysByWorkplace, workplaceDailyRates],
   );
 
-  // 手当合計（総支給額に加算）
-  const allowancesTotal = useMemo(
-    () => allowances.reduce((s, a) => s + (a.amount || 0), 0),
-    [allowances],
-  );
+  // 手当合計（課税＋非課税。総支給額に加算）
+  const allowancesTotal = useMemo(() => allowancesSum(allowances), [allowances]);
 
-  // 非課税手当合計（所得税の課税ベースから控除する。通勤手当など）
+  // 非課税手当合計（所得税の課税ベースから控除する。通勤手当の非課税分など）
   const nonTaxableAllowanceTotal = useMemo(
-    () => allowances.reduce((s, a) => s + (a.taxable ? 0 : a.amount || 0), 0),
+    () => nonTaxableAllowancesSum(allowances),
     [allowances],
   );
 
@@ -2616,6 +2622,12 @@ export function PayrollTab({
   }, [hoursByWorkplace, workplaces]);
 
   const handleLock = (deductions: DeductionBreakdown) => {
+    if (computation.taxError) {
+      toast.error("所得税を計算できないため確定できません", {
+        description: computation.taxError,
+      });
+      return;
+    }
     const result: PayrollResult = {
       tenantId: DEFAULT_TENANT_ID,
       id: buildPayrollResultId(employeeId, year, month),
@@ -2634,6 +2646,7 @@ export function PayrollTab({
       lockedAt: new Date().toISOString(),
       deductions,
       allowances,
+      taxSnapshot: computation.taxMeta,
     };
     onLockOne(result);
     toast.success(`${monthLabel(currentDate)} の給与を確定しました`, {
@@ -2664,6 +2677,7 @@ export function PayrollTab({
             standardRemuneration: master.standardRemuneration,
             birthDate: master.birthDate,
             residentTax: master.residentTax,
+            taxCategory: master.taxCategory,
           }
         : undefined,
     }),
@@ -2694,7 +2708,9 @@ export function PayrollTab({
                 </span>
               )}
             </div>
-            <p className="text-xs text-muted-foreground">甲欄・扶養親族0人(令和6年分)</p>
+            <p className="text-xs text-muted-foreground">
+              {(master?.taxCategory ?? "甲欄") === "乙欄" ? "乙欄" : "甲欄・扶養親族0人"}(令和8年分)
+            </p>
           </div>
         </div>
         <PayTypePills value={payType} onChange={setPayType} disabled={isLocked} />
@@ -2768,6 +2784,7 @@ export function PayrollTab({
         previousMonth={previousMonth}
         isLocked={!!lockedSnapshot}
         canLock={true}
+        taxError={computation.taxError}
         deductions={deductions}
         onLock={handleLock}
         onUnlock={handleUnlock}
@@ -2807,7 +2824,7 @@ export function PayrollTab({
       <div className="flex items-start gap-2 text-xs text-muted-foreground">
         <Info className="w-4 h-4 flex-shrink-0 mt-0.5 text-primary/40" />
         <p>
-          本計算は国税庁「給与所得の源泉徴収税額表(月額表)」電算機計算の特例に基づく甲欄・扶養親族0人の簡易計算です。
+          本計算は国税庁「給与所得の源泉徴収税額表(令和8年分・月額表)」および電算機計算の特例に基づく計算です（甲欄は扶養親族0人）。
           時給制の総支給額は休憩時間を差し引いた正味労働時間と基本時給から、日給制は出勤日数と日給から算出しています。
           5区分の判定はマスタの所定労働時間・法定/所定休日設定に基づくダミーロジックです。
         </p>

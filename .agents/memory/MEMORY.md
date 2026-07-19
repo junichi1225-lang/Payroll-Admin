@@ -5,4 +5,4 @@
 - [Japanese bonus (賞与) payroll](payroll-bonus.md) — independent entity (own DB keys/computeBonus/tab); run snapshots participant employeeIds; 算出率表 from NTA PDF (web summaries wrong); 573万 cap sums healthBaseStandardBonus.
 - [Payroll dual-tab calc unification](payroll-dual-tab-unification.md) — simulator & finalization tabs MUST share computePayroll + timeEngine + resolveRates; any input affecting gross/deductions must be wired into both PayrollTab memos AND payrollInputs adapter, or tabs silently diverge.
 - [Payroll overtime/late-night/holiday premiums](payroll-overtime-premiums.md) — hourly gross = rate×bucketPaidHours (1.25/1.50/1.35/1.25 + 深夜 +0.25 additive, 60h pool); 時給制のみ、日給/月給は割増なし(SPEC).
-- [Income tax — 令和8年分 月額表 + 電算機特例](payroll-income-tax-status.md) — calculateIncomeTax(社保控除後): <105k→0, 105k–740k→transcribed 月額表(甲・扶養0) lookup, ≥740k→電算機特例(別表一/三48,333/四 ×1.021). Verify via acceptance.mjs §B.
+- [Income tax — 令和8年分 module](payroll-income-tax-status.md) — payroll-core/incomeTax.ts owns tax base & rounding (甲=電算機特例, 乙<105k=3.063%, 乙≥105k throws→taxError blocks lock); no re-rounding in computePayroll.

@@ -19,6 +19,8 @@ import {
   EmployeeRecord,
   PayrollResult,
   WorkplaceDef,
+  allowanceTotal,
+  normalizeAllowance,
 } from "@/lib/dummy-data";
 import {
   buildPayrollResultId,
@@ -109,6 +111,12 @@ export function PayrollFinalizationTab({
 
   const handleLockRow = (emp: EmployeeRecord) => {
     const live = computeMonthSummary(emp.id, year, month, employeeDB, workplaces);
+    if (live.taxError) {
+      toast.error(`${emp.name} の所得税を計算できないため確定できません`, {
+        description: live.taxError,
+      });
+      return;
+    }
     const result: PayrollResult = {
       tenantId: DEFAULT_TENANT_ID,
       id: buildPayrollResultId(emp.id, year, month),
@@ -124,13 +132,24 @@ export function PayrollFinalizationTab({
       lockedAt: new Date().toISOString(),
       deductions: live.deductions,
       allowances: live.allowances,
+      taxSnapshot: live.taxMeta,
     };
     onLockOne(result);
   };
 
   const handleLockAll = () => {
-    const newResults: PayrollResult[] = draftRows.map((r) => {
-      const live = computeMonthSummary(r.emp.id, year, month, employeeDB, workplaces);
+    const computed = draftRows.map((r) => ({
+      r,
+      live: computeMonthSummary(r.emp.id, year, month, employeeDB, workplaces),
+    }));
+    const blocked = computed.filter((c) => c.live.taxError);
+    if (blocked.length > 0) {
+      toast.error("所得税を計算できない従業員がいるため一括確定できません", {
+        description: blocked.map((c) => `${c.r.emp.name}: ${c.live.taxError}`).join(" / "),
+      });
+      return;
+    }
+    const newResults: PayrollResult[] = computed.map(({ r, live }) => {
       return {
         tenantId: DEFAULT_TENANT_ID,
         id: buildPayrollResultId(r.emp.id, year, month),
@@ -146,6 +165,7 @@ export function PayrollFinalizationTab({
         lockedAt: new Date().toISOString(),
         deductions: live.deductions,
         allowances: live.allowances,
+        taxSnapshot: live.taxMeta,
       };
     });
     if (newResults.length > 0) onLockAll(newResults);
@@ -167,7 +187,10 @@ export function PayrollFinalizationTab({
     if (snapshot.deductions) {
       return {
         deductions: snapshot.deductions,
-        allowances: (snapshot.allowances ?? []).map((a) => ({ type: a.type, amount: a.amount })),
+        allowances: (snapshot.allowances ?? []).map((a) => ({
+          type: a.type,
+          amount: allowanceTotal(normalizeAllowance(a)),
+        })),
       };
     }
     const comp = loadEmployeeMonthComputation(
@@ -179,7 +202,10 @@ export function PayrollFinalizationTab({
     );
     return {
       deductions: comp.deductions,
-      allowances: comp.allowances.map((a) => ({ type: a.type, amount: a.amount })),
+      allowances: comp.allowances.map((a) => ({
+        type: a.type,
+        amount: allowanceTotal(normalizeAllowance(a)),
+      })),
     };
   };
 
@@ -441,6 +467,20 @@ export function PayrollFinalizationTab({
                           <Unlock className="w-3 h-3" />
                           確定解除
                         </button>
+                      </div>
+                    ) : row.live.taxError ? (
+                      <div className="flex flex-col items-center gap-1">
+                        <button
+                          disabled
+                          title={row.live.taxError}
+                          data-testid={`tax-error-${row.emp.id}`}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-600 text-xs font-semibold cursor-not-allowed"
+                          aria-label={`${row.emp.name}は所得税を計算できないため確定不可`}
+                        >
+                          <Lock className="w-3 h-3" />
+                          確定不可
+                        </button>
+                        <span className="text-[9px] text-rose-600 leading-tight">所得税計算エラー</span>
                       </div>
                     ) : (
                       <button
