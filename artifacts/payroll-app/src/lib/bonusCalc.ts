@@ -22,6 +22,7 @@ import {
 } from "./dummy-data";
 import { BonusComputation, computeBonus } from "./payroll-core";
 import { loadEmployeeMonthComputation } from "./payrollInputs";
+import { resolveStandardRemuneration, resolveResidentTax } from "./employeeData";
 import { DEFAULT_WP_KEY } from "./timeEngine";
 
 /**
@@ -202,10 +203,20 @@ export function computeBonusForEmployee(
     grossBonus,
     employee: employee
       ? {
-          isSocialInsurance: employee.isSocialInsurance,
-          standardRemuneration: employee.standardRemuneration,
+          isSocialInsurance: employee.isSocialInsurance ?? false,
+          onParentalLeave: employee.onParentalLeave,
+          // 賞与支給月に有効な標準報酬月額を履歴から引き当てる
+          standardRemuneration: resolveStandardRemuneration(
+            employeeId,
+            bonusRun.paymentDate.slice(0, 7),
+          ).amount,
           birthDate: employee.birthDate,
-          residentTax: employee.residentTax,
+          // 賞与に住民税はかからないが、型整合のため対象月の値を解決して渡す
+          residentTax: resolveResidentTax(
+            employeeId,
+            bonusRun.paymentDate.slice(0, 7),
+            employee.specialCollectionExempt,
+          ).amount,
         }
       : undefined,
     priorCumulativeStandardBonus: priorCumulative,

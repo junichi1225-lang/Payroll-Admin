@@ -143,7 +143,8 @@ export function computeBonus(input: ComputeBonusInput): BonusComputation {
   // 標準賞与額: 1,000円未満切捨て
   const standardBonusAmount = Math.floor(grossBonus / 1000) * 1000;
 
-  const enrolled = !!employee?.isSocialInsurance;
+  // 育休・産休中は社会保険料（健康・介護・厚年・支援金）の控除を免除（賞与も同様）
+  const enrolled = !employee?.onParentalLeave && !!employee?.isSocialInsurance;
   const isNursingCareTarget = enrolled && employee
     ? isNursingCareInsuranceTarget(employee.birthDate, targetYearMonth)
     : false;

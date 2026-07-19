@@ -5,7 +5,7 @@
 // スナップショット (PayrollResult) 用の薄いラッパーと ID/年月ヘルパーを提供する。
 
 import { AllowanceItem, EmployeeMaster, SalaryType, WorkplaceDef } from "./dummy-data";
-import { DeductionBreakdown, PayrollTaxMeta } from "./payroll-core";
+import { AppliedRateSnapshot, DeductionBreakdown, PayrollTaxMeta } from "./payroll-core";
 import { loadEmployeeMonthComputation } from "./payrollInputs";
 
 export interface PayrollSummary {
@@ -21,6 +21,16 @@ export interface PayrollSummary {
   allowances: AllowanceItem[];
   /** 源泉所得税の計算前提（確定スナップショット用） */
   taxMeta: PayrollTaxMeta;
+  /** 計算に適用した料率（確定スナップショット用） */
+  appliedRates: AppliedRateSnapshot;
+  /** 社会保険料（被保険者負担）控除後の給与額 */
+  socialInsuranceDeductedSalary: number;
+  /** 当月の源泉徴収税額 */
+  withheldIncomeTax: number;
+  /** 適用した標準報酬月額（社保未加入・該当なしは 0） */
+  appliedStandardRemuneration: number;
+  /** 適用した標準報酬月額の履歴レコードID（該当なしは null） */
+  appliedStdRemHistoryId: string | null;
   /** 所得税が計算できなかった場合のエラー（設定時は確定不可） */
   taxError?: string;
 }
@@ -56,6 +66,11 @@ export function computeMonthSummary(
     deductions: comp.deductions,
     allowances: comp.allowances,
     taxMeta: comp.taxMeta,
+    appliedRates: comp.appliedRates,
+    socialInsuranceDeductedSalary: comp.socialInsuranceDeductedSalary,
+    withheldIncomeTax: comp.withheldIncomeTax,
+    appliedStandardRemuneration: comp.appliedStandardRemuneration,
+    appliedStdRemHistoryId: comp.appliedStdRemHistoryId,
     ...(comp.taxError ? { taxError: comp.taxError } : {}),
   };
 }

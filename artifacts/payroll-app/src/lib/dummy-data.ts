@@ -34,26 +34,90 @@ export interface EmployeeMaster {
   pensionNumber: string;
   employmentInsuranceNumber: string;
   employmentType: EmploymentType;
-  taxCategory: TaxCategory;
-  dependentsCount: number;
-  isSocialInsurance: boolean;
-  standardRemuneration: number;
-  isEmploymentInsurance: boolean;
+  /** 所得税区分（甲欄/乙欄）。担当者が直接選択。null = 未設定（給与計算時必須） */
+  taxCategory: TaxCategory | null;
+  /** 扶養親族数（配偶者含む）。null = 未設定（給与計算時必須） */
+  dependentsCount: number | null;
+  /** 社会保険 加入/非加入。null = 未設定（給与計算時必須） */
+  isSocialInsurance: boolean | null;
+  /** 雇用保険 加入/非加入。null = 未設定（給与計算時必須） */
+  isEmploymentInsurance: boolean | null;
+  /** 育休・産休中フラグ。true = 社会保険系控除（健康・介護・厚年・支援金）を 0 にする */
+  onParentalLeave: boolean;
   /**
-   * 住民税額（月額・円）
-   * 自治体から届く特別徴収税額決定通知書の月額をそのまま登録する運用。
-   * 前年所得が無い新卒・退職者等は 0 を設定する。
+   * 特別徴収対象外フラグ。
+   * true = 住民税の特別徴収を行わない（普通徴収等）。金額 0 円とは意味が異なる。
+   * 対象外の従業員は給与計算で住民税を控除せず、明細にも行を出さない。
    */
-  residentTax: number;
+  specialCollectionExempt: boolean;
   /** 入社日 "YYYY-MM-DD"（給与計算の在籍判定に使用） */
   joinedDate: string;
   /** 退職日 "YYYY-MM-DD"（在籍中は null。退職月の社会保険料判定等に使用） */
   resignedDate: string | null;
 }
 
+// ─────────────────────────────────────────────
+// 標準報酬月額 履歴 DB
+// Employee の単一値保持を廃止し、効力期間つき履歴で管理する。
+// 給与計算時は payroll-core の getStandardRemuneration(histories, employeeId, targetMonth)
+// で「対象月に有効な1件」を引き当てる。
+// ─────────────────────────────────────────────
+export interface StandardRemunerationHistory {
+  id: string;
+  employeeId: string;
+  /** 標準報酬月額（円） */
+  amount: number;
+  /** 効力開始年月 "YYYY-MM" */
+  effectiveFrom: string;
+  /** 効力終了年月 "YYYY-MM"。null = 現在有効 */
+  effectiveTo: string | null;
+}
+
+/**
+ * 標準報酬月額履歴の初期ダミーデータ。
+ * 効力開始は各従業員の入社月（過去月へ遡っても計算結果が変わらないようにするため）。
+ */
+export const DEFAULT_STD_REM_HISTORIES: StandardRemunerationHistory[] = [
+  { id: "srh_e1_1", employeeId: "e1", amount: 320000, effectiveFrom: "2019-04", effectiveTo: null },
+  { id: "srh_e2_1", employeeId: "e2", amount: 280000, effectiveFrom: "2020-07", effectiveTo: null },
+  { id: "srh_e3_1", employeeId: "e3", amount: 380000, effectiveFrom: "2018-01", effectiveTo: null },
+  { id: "srh_e4_1", employeeId: "e4", amount: 220000, effectiveFrom: "2022-10", effectiveTo: null },
+  { id: "srh_e5_1", employeeId: "e5", amount: 420000, effectiveFrom: "2017-06", effectiveTo: null },
+];
+
+// ─────────────────────────────────────────────
+// 住民税 履歴 DB（年度単位の2値: 6月分と7月以降）
+// 特別徴収税額決定通知書は「6月分」と「7月以降の月額」が異なるため、
+// 年度（6月開始）ごとに2値で保持する。
+// ─────────────────────────────────────────────
+export interface ResidentTaxHistory {
+  id: string;
+  employeeId: string;
+  /** 年度（6月開始）。例: 2026 = 2026年6月〜2027年5月 */
+  fiscalYear: number;
+  /** 6月（初月）の月額 */
+  juneAmount: number;
+  /** 7月〜翌5月の月額 */
+  regularAmount: number;
+}
+
+/**
+ * 住民税履歴の初期ダミーデータ。
+ * 旧・単一値と同額を juneAmount / regularAmount にコピーしているため、
+ * どの月を計算しても従来と同じ控除額になる（計算結果を変えないための移行方針）。
+ */
+export const DEFAULT_RESIDENT_TAX_HISTORIES: ResidentTaxHistory[] = [
+  { id: "rth_e1_1", employeeId: "e1", fiscalYear: 2019, juneAmount: 14200, regularAmount: 14200 },
+  { id: "rth_e2_1", employeeId: "e2", fiscalYear: 2020, juneAmount: 8500, regularAmount: 8500 },
+  { id: "rth_e3_1", employeeId: "e3", fiscalYear: 2018, juneAmount: 21800, regularAmount: 21800 },
+  // e4: 新卒入社のため前年所得なし → 住民税 0（対象外フラグとは別物）
+  { id: "rth_e4_1", employeeId: "e4", fiscalYear: 2022, juneAmount: 0, regularAmount: 0 },
+  { id: "rth_e5_1", employeeId: "e5", fiscalYear: 2017, juneAmount: 26500, regularAmount: 26500 },
+];
+
 /**
  * 従業員マスタの初期ダミーデータ。
- * モックアップ表示のため住民税額のみ予め設定済（その他は社員情報フォームから入力する想定）。
+ * モックアップ表示のため住民税は履歴DB（DEFAULT_RESIDENT_TAX_HISTORIES）に設定済。
  * 既存 localStorage に保存済みのマスタが優先される。
  */
 export const DEFAULT_EMPLOYEE_MASTERS: Record<string, EmployeeMaster> = {
@@ -66,9 +130,10 @@ export const DEFAULT_EMPLOYEE_MASTERS: Record<string, EmployeeMaster> = {
     pensionNumber: "", employmentInsuranceNumber: "",
     employmentType: "正社員", taxCategory: "甲欄",
     dependentsCount: 1,
-    isSocialInsurance: true, standardRemuneration: 320000,
+    isSocialInsurance: true,
     isEmploymentInsurance: true,
-    residentTax: 14200,
+    onParentalLeave: false,
+    specialCollectionExempt: false,
     joinedDate: "2019-04-01", resignedDate: null,
   },
   e2: {
@@ -80,9 +145,10 @@ export const DEFAULT_EMPLOYEE_MASTERS: Record<string, EmployeeMaster> = {
     pensionNumber: "", employmentInsuranceNumber: "",
     employmentType: "正社員", taxCategory: "甲欄",
     dependentsCount: 0,
-    isSocialInsurance: true, standardRemuneration: 280000,
+    isSocialInsurance: true,
     isEmploymentInsurance: true,
-    residentTax: 8500,
+    onParentalLeave: false,
+    specialCollectionExempt: false,
     joinedDate: "2020-07-15", resignedDate: null,
   },
   e3: {
@@ -94,9 +160,10 @@ export const DEFAULT_EMPLOYEE_MASTERS: Record<string, EmployeeMaster> = {
     pensionNumber: "", employmentInsuranceNumber: "",
     employmentType: "正社員", taxCategory: "甲欄",
     dependentsCount: 2,
-    isSocialInsurance: true, standardRemuneration: 380000,
+    isSocialInsurance: true,
     isEmploymentInsurance: true,
-    residentTax: 21800,
+    onParentalLeave: false,
+    specialCollectionExempt: false,
     joinedDate: "2018-01-10", resignedDate: null,
   },
   e4: {
@@ -108,10 +175,10 @@ export const DEFAULT_EMPLOYEE_MASTERS: Record<string, EmployeeMaster> = {
     pensionNumber: "", employmentInsuranceNumber: "",
     employmentType: "正社員", taxCategory: "甲欄",
     dependentsCount: 0,
-    isSocialInsurance: true, standardRemuneration: 220000,
+    isSocialInsurance: true,
     isEmploymentInsurance: true,
-    // 新卒入社のため前年所得なし → 1年目の住民税は 0
-    residentTax: 0,
+    onParentalLeave: false,
+    specialCollectionExempt: false,
     joinedDate: "2022-10-01", resignedDate: null,
   },
   e5: {
@@ -123,24 +190,44 @@ export const DEFAULT_EMPLOYEE_MASTERS: Record<string, EmployeeMaster> = {
     pensionNumber: "", employmentInsuranceNumber: "",
     employmentType: "正社員", taxCategory: "甲欄",
     dependentsCount: 3,
-    isSocialInsurance: true, standardRemuneration: 420000,
+    isSocialInsurance: true,
     isEmploymentInsurance: true,
-    residentTax: 26500,
+    onParentalLeave: false,
+    specialCollectionExempt: false,
     joinedDate: "2017-06-01", resignedDate: null,
   },
 };
 
 // ─────────────────────────────────────────────
-// 契約・単価マスタ DB（職場別の給与契約）
+// 契約・単価マスタ DB（効力期間つき履歴。職場別の給与契約）
+// 賃金形態（月給/日給/時給）は Employee 側から契約履歴へ移動した。
+// 給与計算時は打刻日付で有効な契約を payroll-core の getActiveContract で引く。
 // ─────────────────────────────────────────────
+export type WageType = "monthly" | "daily" | "hourly";
+
 export interface ContractMaster {
   tenantId: string;
   id: string;
   employeeId: string;
-  workplaceId: string;   // 既定契約は 'default'
-  salaryType: SalaryType;
-  baseSalary: number;
+  /** 対象職場。null = 派遣先を特定しない基本契約 */
+  workplaceId: string | null;
+  /** 賃金形態（Employee から移動） */
+  wageType: WageType;
+  /** 単価（月給なら月額、日給なら日額、時給なら時間額） */
+  wageAmount: number;
+  /** 効力開始日 "YYYY-MM-DD" */
+  effectiveFrom: string;
+  /** 効力終了日 "YYYY-MM-DD"。null = 現在有効 */
+  effectiveTo: string | null;
 }
+
+/** UI 表示ラベル（月給/日給/時給）↔ wageType の相互変換。 */
+export const WAGE_TYPE_TO_SALARY_TYPE: Record<WageType, SalaryType> = {
+  monthly: "月給", daily: "日給", hourly: "時給",
+};
+export const SALARY_TYPE_TO_WAGE_TYPE: Record<SalaryType, WageType> = {
+  "月給": "monthly", "日給": "daily", "時給": "hourly",
+};
 
 // ─────────────────────────────────────────────
 // 給与確定スナップショット DB
@@ -179,6 +266,31 @@ export interface PayrollResult {
    * レガシーデータでは undefined。
    */
   taxSnapshot?: PayrollTaxSnapshot;
+  /**
+   * 確定時に適用した料率のスナップショット（健保・介護・厚年・支援金・雇用保険）。
+   * レガシーデータでは undefined。
+   */
+  appliedRates?: {
+    healthInsuranceRate: number;
+    nursingCareInsuranceRate: number;
+    pensionInsuranceRate: number;
+    childcareSupportRate: number;
+    employmentInsuranceEmployeeRate: number;
+  };
+  /** 社会保険料（被保険者負担）控除後の給与額。賞与計算が前月実績として参照する */
+  socialInsuranceDeductedSalary?: number;
+  /** 当月の源泉徴収税額。賞与計算が前月実績として参照する */
+  withheldIncomeTax?: number;
+  /** 有給休暇: 前月末残日数（有給管理機能導入前の確定分は 0） */
+  paidLeavePreviousBalance?: number;
+  /** 有給休暇: 当月使用日数 */
+  paidLeaveUsedThisMonth?: number;
+  /** 有給休暇: 当月末残日数 */
+  paidLeaveCurrentBalance?: number;
+  /** 確定時に適用した標準報酬月額 */
+  appliedStandardRemuneration?: number;
+  /** 適用した標準報酬月額の履歴レコードID（該当なしは null） */
+  appliedStdRemHistoryId?: string | null;
 }
 
 /** 源泉所得税の計算前提スナップショット。 */

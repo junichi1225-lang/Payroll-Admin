@@ -65,6 +65,11 @@ export interface PayrollEmployeeInput {
   residentTax: number;
   /** 税額表の欄区分（未指定は甲欄扱い） */
   taxCategory?: PayrollTaxCategory;
+  /**
+   * 育休・産休中フラグ。true の場合、健康保険料・介護保険料・厚生年金保険料・
+   * 子ども子育て支援金の控除を 0 にする（雇用保険・所得税・住民税は通常通り）。
+   */
+  onParentalLeave?: boolean;
 }
 
 export interface ComputePayrollInput {
@@ -113,18 +118,171 @@ export interface PayrollTaxMeta {
   dependentCount: number;
 }
 
+/** 確定スナップショット用: 計算に適用した各料率。 */
+export interface AppliedRateSnapshot {
+  /** 健康保険料率（労使合計） */
+  healthInsuranceRate: number;
+  /** 介護保険料率（労使合計） */
+  nursingCareInsuranceRate: number;
+  /** 厚生年金保険料率（労使合計） */
+  pensionInsuranceRate: number;
+  /** 子ども子育て支援金率（労使合計） */
+  childcareSupportRate: number;
+  /** 雇用保険・労働者負担率 */
+  employmentInsuranceEmployeeRate: number;
+}
+
 export interface PayrollComputation {
   gross: number;
   deductions: DeductionBreakdown;
   netPay: number;
   /** 源泉所得税の計算前提 */
   taxMeta: PayrollTaxMeta;
+  /** 計算に適用した料率（確定スナップショット保存用） */
+  appliedRates: AppliedRateSnapshot;
+  /** 社会保険料（被保険者負担）控除後の給与額。賞与計算が前月実績として参照する */
+  socialInsuranceDeductedSalary: number;
+  /** 当月の源泉徴収税額（= deductions.incomeTax）。賞与計算が前月実績として参照する */
+  withheldIncomeTax: number;
   /**
    * 所得税が計算できなかった場合のエラーメッセージ（例: 乙欄・105,000円以上は未実装）。
    * 設定されている場合、incomeTax は 0 のままであり、この計算結果で給与を
    * 確定（ロック）してはならない。UI は必ずエラーを表示すること。
    */
   taxError?: string;
+}
+
+// ───────────────────────────────────────────────────────────
+// 標準報酬月額 履歴引き当て
+// ───────────────────────────────────────────────────────────
+
+/** 標準報酬月額の履歴レコード（コアが必要とするフィールドのみ）。 */
+export interface StandardRemunerationHistoryInput {
+  id: string;
+  employeeId: string;
+  amount: number;
+  /** 効力開始年月 "YYYY-MM" */
+  effectiveFrom: string;
+  /** 効力終了年月 "YYYY-MM"。null = 現在有効 */
+  effectiveTo: string | null;
+}
+
+/**
+ * 対象年月に有効な標準報酬月額履歴を1件引き当てる純粋関数。
+ * "YYYY-MM" 文字列は辞書順比較で年月比較と一致する。
+ * 該当なしの場合は null（呼び出し側で 0 円扱い＝社保未加入相当）。
+ * 複数該当（期間重複）の場合は effectiveFrom が最新のものを採用する。
+ */
+export function getStandardRemuneration(
+  histories: StandardRemunerationHistoryInput[],
+  employeeId: string,
+  targetYearMonth: string,
+): StandardRemunerationHistoryInput | null {
+  const matches = histories.filter(
+    (h) =>
+      h.employeeId === employeeId &&
+      h.effectiveFrom <= targetYearMonth &&
+      (h.effectiveTo == null || targetYearMonth <= h.effectiveTo),
+  );
+  if (matches.length === 0) return null;
+  return matches.reduce((a, b) => (b.effectiveFrom > a.effectiveFrom ? b : a));
+}
+
+// ───────────────────────────────────────────────────────────
+// 住民税 履歴引き当て（年度2値: 6月分 / 7月以降）
+// ───────────────────────────────────────────────────────────
+
+/** 住民税の履歴レコード（コアが必要とするフィールドのみ）。 */
+export interface ResidentTaxHistoryInput {
+  id: string;
+  employeeId: string;
+  /** 年度（6月開始）。例: 2026 = 2026年6月〜2027年5月 */
+  fiscalYear: number;
+  /** 6月（初月）の月額 */
+  juneAmount: number;
+  /** 7月〜翌5月の月額 */
+  regularAmount: number;
+}
+
+/** 対象年月 "YYYY-MM" が属する住民税の年度（6月開始）。1〜5月は前年の年度。 */
+export function residentTaxFiscalYearOf(targetYearMonth: string): number {
+  const [y, m] = targetYearMonth.split("-").map((v) => parseInt(v, 10));
+  return m >= 6 ? y : y - 1;
+}
+
+/**
+ * 対象年月の住民税控除額を引き当てる純粋関数。
+ * - 対象月が6月 → juneAmount、7月〜翌5月 → regularAmount
+ * - 該当年度のレコードがなければ、それ以前で最も新しい年度のレコードに
+ *   フォールバックする（旧・単一値からの移行データで過去月の計算結果を
+ *   変えないための措置）。それも無ければ最も古いレコード。
+ * - レコードが1件もなければ null。
+ */
+export function getResidentTax(
+  histories: ResidentTaxHistoryInput[],
+  employeeId: string,
+  targetYearMonth: string,
+): { amount: number; record: ResidentTaxHistoryInput } | null {
+  const own = histories.filter((h) => h.employeeId === employeeId);
+  if (own.length === 0) return null;
+  const fy = residentTaxFiscalYearOf(targetYearMonth);
+  const exact = own.filter((h) => h.fiscalYear === fy);
+  const earlier = own.filter((h) => h.fiscalYear < fy);
+  const record =
+    exact.length > 0
+      ? exact.reduce((a, b) => (b.fiscalYear > a.fiscalYear ? b : a))
+      : earlier.length > 0
+        ? earlier.reduce((a, b) => (b.fiscalYear > a.fiscalYear ? b : a))
+        : own.reduce((a, b) => (b.fiscalYear < a.fiscalYear ? b : a));
+  const month = parseInt(targetYearMonth.split("-")[1], 10);
+  const amount = month === 6 ? record.juneAmount : record.regularAmount;
+  return { amount, record };
+}
+
+// ───────────────────────────────────────────────────────────
+// 契約・単価 履歴引き当て
+// ───────────────────────────────────────────────────────────
+
+/** 契約履歴レコード（コアが必要とするフィールドのみ）。 */
+export interface ContractHistoryInput {
+  id: string;
+  employeeId: string;
+  /** null = 派遣先を特定しない基本契約 */
+  workplaceId: string | null;
+  wageType: "monthly" | "daily" | "hourly";
+  wageAmount: number;
+  /** 効力開始日 "YYYY-MM-DD" */
+  effectiveFrom: string;
+  /** 効力終了日 "YYYY-MM-DD"。null = 現在有効 */
+  effectiveTo: string | null;
+}
+
+/**
+ * 対象日 "YYYY-MM-DD" に有効な契約を1件引き当てる純粋関数。
+ * - workplaceId を指定した場合: その職場の契約を優先し、無ければ基本契約
+ *   （workplaceId = null）へフォールバックする（ヘルプ出勤対応）。
+ * - workplaceId 未指定（null）の場合: 基本契約のみ対象。
+ * - 複数該当時は effectiveFrom が最新のものを採用。該当なしは null。
+ */
+export function getActiveContract(
+  contracts: ContractHistoryInput[],
+  employeeId: string,
+  targetDate: string,
+  workplaceId: string | null = null,
+): ContractHistoryInput | null {
+  const inEffect = (c: ContractHistoryInput) =>
+    c.employeeId === employeeId &&
+    c.effectiveFrom <= targetDate &&
+    (c.effectiveTo == null || targetDate <= c.effectiveTo);
+  const pick = (list: ContractHistoryInput[]) =>
+    list.length === 0
+      ? null
+      : list.reduce((a, b) => (b.effectiveFrom > a.effectiveFrom ? b : a));
+  if (workplaceId != null) {
+    const specific = pick(contracts.filter((c) => inEffect(c) && c.workplaceId === workplaceId));
+    if (specific) return specific;
+  }
+  return pick(contracts.filter((c) => inEffect(c) && c.workplaceId == null));
 }
 
 const EMPTY_DEDUCTIONS: DeductionBreakdown = {
@@ -147,13 +305,31 @@ export function computePayroll(input: ComputePayrollInput): PayrollComputation {
   const taxCategory: PayrollTaxCategory = employee?.taxCategory ?? "甲欄";
   const taxMeta: PayrollTaxMeta = { taxYear: 2026, taxCategory, dependentCount: 0 };
 
+  const rates = resolveRates(prefecture, targetYearMonth);
+  const appliedRates: AppliedRateSnapshot = {
+    healthInsuranceRate: rates.healthInsuranceRate,
+    nursingCareInsuranceRate: rates.nursingCareInsuranceRate,
+    pensionInsuranceRate: rates.pensionInsuranceRate,
+    childcareSupportRate: rates.childcareSupportRate,
+    employmentInsuranceEmployeeRate: rates.employmentInsuranceEmployeeRate,
+  };
+
   if (gross <= 0) {
-    return { gross: Math.max(0, gross), deductions: { ...EMPTY_DEDUCTIONS }, netPay: Math.max(0, gross), taxMeta };
+    return {
+      gross: Math.max(0, gross),
+      deductions: { ...EMPTY_DEDUCTIONS },
+      netPay: Math.max(0, gross),
+      taxMeta,
+      appliedRates,
+      socialInsuranceDeductedSalary: Math.max(0, gross),
+      withheldIncomeTax: 0,
+    };
   }
 
-  const rates = resolveRates(prefecture, targetYearMonth);
-
-  const enrolled = !!employee?.isSocialInsurance && (employee?.standardRemuneration ?? 0) > 0;
+  // 育休・産休中は社会保険料（健康・介護・厚年・支援金）の控除を免除する。
+  // 雇用保険・所得税・住民税は通常どおり計算する。
+  const onLeave = !!employee?.onParentalLeave;
+  const enrolled = !onLeave && !!employee?.isSocialInsurance && (employee?.standardRemuneration ?? 0) > 0;
   const standardRem = enrolled ? employee!.standardRemuneration : 0;
   const isNursingCareTarget = enrolled && employee
     ? isNursingCareInsuranceTarget(employee.birthDate, targetYearMonth)
@@ -206,6 +382,9 @@ export function computePayroll(input: ComputePayrollInput): PayrollComputation {
     },
     netPay: Math.max(0, gross - total),
     taxMeta,
+    appliedRates,
+    socialInsuranceDeductedSalary: Math.max(0, gross - socialInsuranceTotal),
+    withheldIncomeTax: incomeTax,
     ...(taxError ? { taxError } : {}),
   };
 }

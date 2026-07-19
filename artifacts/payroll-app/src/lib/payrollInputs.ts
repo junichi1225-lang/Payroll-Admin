@@ -31,7 +31,8 @@ import {
   computeHourlyGross,
   computeDailyGross,
 } from "./timeEngine";
-import { computePayroll, DeductionBreakdown, PayrollTaxMeta } from "./payroll-core";
+import { computePayroll, DeductionBreakdown, PayrollTaxMeta, AppliedRateSnapshot } from "./payroll-core";
+import { resolveStandardRemuneration, resolveResidentTax } from "./employeeData";
 
 type PayType = "monthly" | "daily" | "hourly";
 
@@ -108,6 +109,16 @@ export interface MonthComputation {
   prefecture: string;
   /** 源泉所得税の計算前提（税額表年分・甲欄/乙欄・扶養数） */
   taxMeta: PayrollTaxMeta;
+  /** 計算に適用した料率（確定スナップショット保存用） */
+  appliedRates: AppliedRateSnapshot;
+  /** 社会保険料（被保険者負担）控除後の給与額 */
+  socialInsuranceDeductedSalary: number;
+  /** 当月の源泉徴収税額 */
+  withheldIncomeTax: number;
+  /** 適用した標準報酬月額（社保未加入・該当なしは 0） */
+  appliedStandardRemuneration: number;
+  /** 適用した標準報酬月額の履歴レコードID（該当なしは null） */
+  appliedStdRemHistoryId: string | null;
   /**
    * 所得税が計算できなかった場合のエラー（例: 乙欄・105,000円以上は未実装）。
    * 設定時は incomeTax=0 のままなので、この結果で給与を確定してはならない。
@@ -202,6 +213,7 @@ export function loadEmployeeMonthComputation(
   const primaryPrefecture = primaryWp?.prefecture ?? "東京都";
 
   const yyyymm = `${year}-${String(month).padStart(2, "0")}`;
+  const resolvedStdRem = resolveStandardRemuneration(employeeId, yyyymm);
   const computation = computePayroll({
     targetYearMonth: yyyymm,
     prefecture: primaryPrefecture,
@@ -209,11 +221,12 @@ export function loadEmployeeMonthComputation(
     nonTaxableAllowanceTotal,
     employee: employee
       ? {
-          isSocialInsurance: employee.isSocialInsurance,
-          standardRemuneration: employee.standardRemuneration,
+          isSocialInsurance: employee.isSocialInsurance ?? false,
+          standardRemuneration: resolvedStdRem.amount,
           birthDate: employee.birthDate,
-          residentTax: employee.residentTax,
-          taxCategory: employee.taxCategory,
+          residentTax: resolveResidentTax(employeeId, yyyymm, employee.specialCollectionExempt).amount,
+          taxCategory: employee.taxCategory ?? "甲欄",
+          onParentalLeave: employee.onParentalLeave,
         }
       : undefined,
   });
@@ -234,6 +247,11 @@ export function loadEmployeeMonthComputation(
     allowances,
     prefecture: primaryPrefecture,
     taxMeta: computation.taxMeta,
+    appliedRates: computation.appliedRates,
+    socialInsuranceDeductedSalary: computation.socialInsuranceDeductedSalary,
+    withheldIncomeTax: computation.withheldIncomeTax,
+    appliedStandardRemuneration: resolvedStdRem.amount,
+    appliedStdRemHistoryId: resolvedStdRem.historyId,
     ...(computation.taxError ? { taxError: computation.taxError } : {}),
   };
 }

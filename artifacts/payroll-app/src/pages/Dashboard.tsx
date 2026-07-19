@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { MonthSwitcher } from "@/components/MonthSwitcher";
-import { DUMMY_EMPLOYEE_DATA, EmployeeRecord, EmployeeColor, DEFAULT_WORKPLACES, WorkplaceDef, EmployeeMaster, ContractMaster, PayrollResult, BonusRun, BonusResult, DEFAULT_TENANT_ID, DEFAULT_EMPLOYEE_MASTERS } from "@/lib/dummy-data";
+import { DUMMY_EMPLOYEE_DATA, EmployeeRecord, EmployeeColor, DEFAULT_WORKPLACES, WorkplaceDef, EmployeeMaster, ContractMaster, PayrollResult, BonusRun, BonusResult, DEFAULT_TENANT_ID, DEFAULT_EMPLOYEE_MASTERS, StandardRemunerationHistory, DEFAULT_STD_REM_HISTORIES, ResidentTaxHistory, DEFAULT_RESIDENT_TAX_HISTORIES } from "@/lib/dummy-data";
 import { usePersistedState } from "@/lib/usePersistedState";
+import { residentTaxFiscalYearOf } from "@/lib/payroll-core";
+import { SALARY_TYPE_TO_WAGE_TYPE, SalaryType } from "@/lib/dummy-data";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import { Plus, Users, CheckCircle2 } from "lucide-react";
@@ -221,6 +223,18 @@ export default function Dashboard() {
   const [employeeDB, setEmployeeDB] = usePersistedState<Record<string, EmployeeMaster>>("mock_employeeDB", DEFAULT_EMPLOYEE_MASTERS);
   const [contractDB, setContractDB] = usePersistedState<ContractMaster[]>("mock_contractDB", []);
 
+  // 標準報酬月額 履歴 DB（Employee の単一値保持を廃止し、効力期間つき履歴で管理）
+  const [stdRemHistoryDB, setStdRemHistoryDB] = usePersistedState<StandardRemunerationHistory[]>(
+    "mock_stdRemHistoryDB",
+    DEFAULT_STD_REM_HISTORIES,
+  );
+
+  // 住民税 履歴 DB（年度2値: 6月分 / 7月以降。Employee の単一値保持を廃止）
+  const [residentTaxDB, setResidentTaxDB] = usePersistedState<ResidentTaxHistory[]>(
+    "mock_residentTaxDB",
+    DEFAULT_RESIDENT_TAX_HISTORIES,
+  );
+
   /**
    * 旧バージョンの localStorage 互換マイグレーション。
    * - `mock_employeeDB` が `{}` のまま保存されている既存ユーザにダミー社員マスタをシード
@@ -240,11 +254,115 @@ export default function Dashboard() {
           mutated = true;
           continue;
         }
-        if (typeof cur.residentTax !== "number") {
-          next[id] = { ...cur, residentTax: seed.residentTax };
+        if (typeof cur.specialCollectionExempt !== "boolean") {
+          next[id] = { ...cur, specialCollectionExempt: seed.specialCollectionExempt };
+          mutated = true;
+        }
+        if (typeof next[id].onParentalLeave !== "boolean") {
+          next[id] = { ...next[id], onParentalLeave: false };
           mutated = true;
         }
       }
+      // シード外の従業員（手動追加分）にも onParentalLeave を補完
+      for (const [id, cur] of Object.entries(next)) {
+        if (typeof cur.onParentalLeave !== "boolean") {
+          next[id] = { ...cur, onParentalLeave: false };
+          mutated = true;
+        }
+      }
+      return mutated ? next : prev;
+    });
+    // 標準報酬月額の履歴化マイグレーション:
+    // 旧バージョンで EmployeeMaster.standardRemuneration（単一値）を保存していた場合、
+    // 履歴レコード（effectiveFrom = 入社月, effectiveTo = null）へ1度だけ移行する。
+    // 入社月起点にすることで過去月へ遡っても計算結果が変わらない。
+    setStdRemHistoryDB((prevHist) => {
+      let raw: Record<string, EmployeeMaster & { standardRemuneration?: number }> = {};
+      try {
+        raw = JSON.parse(localStorage.getItem("mock_employeeDB") ?? "{}");
+      } catch {
+        return prevHist;
+      }
+      let mutated = false;
+      const next = [...prevHist];
+      for (const [empId, m] of Object.entries(raw)) {
+        const legacy = m?.standardRemuneration;
+        if (typeof legacy !== "number" || legacy <= 0) continue;
+        if (next.some((h) => h.employeeId === empId)) continue;
+        const fromMonth =
+          typeof m.joinedDate === "string" && /^\d{4}-\d{2}/.test(m.joinedDate)
+            ? m.joinedDate.slice(0, 7)
+            : "2000-01";
+        next.push({
+          id: `srh_${empId}_migrated`,
+          employeeId: empId,
+          amount: legacy,
+          effectiveFrom: fromMonth,
+          effectiveTo: null,
+        });
+        mutated = true;
+      }
+      return mutated ? next : prevHist;
+    });
+    // 住民税の履歴化マイグレーション:
+    // 旧バージョンで EmployeeMaster.residentTax（単一値）を保存していた場合、
+    // 年度2値レコード（juneAmount = regularAmount = 旧値）へ1度だけ移行する。
+    // 6月と7月以降を同額にすることで、どの月の計算結果も従来と変わらない。
+    setResidentTaxDB((prevHist) => {
+      let raw: Record<string, EmployeeMaster & { residentTax?: number }> = {};
+      try {
+        raw = JSON.parse(localStorage.getItem("mock_employeeDB") ?? "{}");
+      } catch {
+        return prevHist;
+      }
+      let mutated = false;
+      const next = [...prevHist];
+      for (const [empId, m] of Object.entries(raw)) {
+        const legacy = m?.residentTax;
+        if (typeof legacy !== "number") continue;
+        if (next.some((h) => h.employeeId === empId)) continue;
+        const fy =
+          typeof m.joinedDate === "string" && /^\d{4}-\d{2}/.test(m.joinedDate)
+            ? residentTaxFiscalYearOf(m.joinedDate.slice(0, 7))
+            : 2000;
+        next.push({
+          id: `rth_${empId}_migrated`,
+          employeeId: empId,
+          fiscalYear: fy,
+          juneAmount: legacy,
+          regularAmount: legacy,
+        });
+        mutated = true;
+      }
+      return mutated ? next : prevHist;
+    });
+    // 契約の履歴化マイグレーション:
+    // 旧バージョンの契約（salaryType/baseSalary・workplaceId "default"・期間なし）を
+    // 効力期間つき契約（wageType/wageAmount, effectiveFrom = 入社日, effectiveTo = null,
+    // workplaceId = null の基本契約）へ1度だけ移行する。
+    setContractDB((prev) => {
+      type LegacyContract = ContractMaster & { salaryType?: SalaryType; baseSalary?: number };
+      let empRaw: Record<string, EmployeeMaster> = {};
+      try {
+        empRaw = JSON.parse(localStorage.getItem("mock_employeeDB") ?? "{}");
+      } catch { /* noop */ }
+      let mutated = false;
+      const next = (prev as LegacyContract[]).map((c) => {
+        if (typeof c.effectiveFrom === "string" && c.wageType) return c;
+        mutated = true;
+        const joined = empRaw[c.employeeId]?.joinedDate;
+        return {
+          tenantId: c.tenantId ?? DEFAULT_TENANT_ID,
+          id: c.id,
+          employeeId: c.employeeId,
+          workplaceId: (c.workplaceId as string | null) === "default" ? null : c.workplaceId ?? null,
+          wageType: c.salaryType ? SALARY_TYPE_TO_WAGE_TYPE[c.salaryType] : "monthly",
+          wageAmount: typeof c.baseSalary === "number" ? c.baseSalary : c.wageAmount ?? 0,
+          effectiveFrom:
+            typeof joined === "string" && /^\d{4}-\d{2}-\d{2}$/.test(joined) ? joined : "2000-01-01",
+          effectiveTo: null,
+        } satisfies ContractMaster;
+      });
       return mutated ? next : prev;
     });
     // 職場マスタ: 旧バージョンに無い設定フィールド（朝残業算入・深夜割増適用）を補完
@@ -349,27 +467,25 @@ export default function Dashboard() {
   };
   const handleSaveEmployeeMaster = (
     master: EmployeeMaster,
-    contractInput: Pick<ContractMaster, "salaryType" | "baseSalary">,
+    contracts: ContractMaster[],
+    stdRemHistories: StandardRemunerationHistory[],
+    residentTaxHistories: ResidentTaxHistory[],
   ) => {
     setEmployeeDB((prev) => ({ ...prev, [master.id]: master }));
-    setContractDB((prev) => {
-      const idx = prev.findIndex((c) => c.employeeId === master.id && c.workplaceId === "default");
-      if (idx >= 0) {
-        const next = [...prev];
-        next[idx] = { ...next[idx], ...contractInput, tenantId: DEFAULT_TENANT_ID };
-        return next;
-      }
-      return [
-        ...prev,
-        {
-          tenantId: DEFAULT_TENANT_ID,
-          id: `c_${master.id}_default`,
-          employeeId: master.id,
-          workplaceId: "default",
-          ...contractInput,
-        },
-      ];
-    });
+    // この従業員の履歴を丸ごと置き換え（他従業員の履歴は保持）
+    setStdRemHistoryDB((prev) => [
+      ...prev.filter((h) => h.employeeId !== master.id),
+      ...stdRemHistories,
+    ]);
+    setResidentTaxDB((prev) => [
+      ...prev.filter((h) => h.employeeId !== master.id),
+      ...residentTaxHistories,
+    ]);
+    // この従業員の契約履歴を丸ごと置き換え（他従業員の契約は保持）
+    setContractDB((prev) => [
+      ...prev.filter((c) => c.employeeId !== master.id),
+      ...contracts,
+    ]);
   };
 
   // Add employee dialog state
@@ -561,6 +677,9 @@ export default function Dashboard() {
                           onAddWorkplace={handleAddWorkplace}
                           onUpdateWorkplace={handleUpdateWorkplace}
                           employeeDB={employeeDB}
+                          contractDB={contractDB}
+                          stdRemHistoryDB={stdRemHistoryDB}
+                          residentTaxDB={residentTaxDB}
                           payrollResultDB={payrollResultDB}
                           onLockOne={handleLockOne}
                           onUnlockOne={handleUnlockOne}
@@ -570,7 +689,9 @@ export default function Dashboard() {
                           key={selectedEmployeeId}
                           employee={selectedEmployee}
                           savedMaster={employeeDB[selectedEmployeeId]}
-                          savedContract={contractDB.find((c) => c.employeeId === selectedEmployeeId && c.workplaceId === "default")}
+                          contractHistories={contractDB.filter((c) => c.employeeId === selectedEmployeeId)}
+                          stdRemHistories={stdRemHistoryDB.filter((h) => h.employeeId === selectedEmployeeId)}
+                          residentTaxHistories={residentTaxDB.filter((h) => h.employeeId === selectedEmployeeId)}
                           onSave={handleSaveEmployeeMaster}
                         />
                       ) : activeTab === "finalize" ? (
@@ -580,6 +701,8 @@ export default function Dashboard() {
                           employeeDB={employeeDB}
                           workplaces={workplaces}
                           payrollResultDB={payrollResultDB}
+                          contractDB={contractDB}
+                          stdRemHistoryDB={stdRemHistoryDB}
                           onLockOne={handleLockOne}
                           onUnlockOne={handleUnlockOne}
                           onLockAll={handleLockAll}

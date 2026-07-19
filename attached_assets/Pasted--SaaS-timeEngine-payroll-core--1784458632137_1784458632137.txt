@@ -1,0 +1,134 @@
+# 給与計算SaaS データモデル変更(要件定義確定版の反映)
+
+以下の変更を実装してください。既存の給与計算ロジック(timeEngine / payroll-core)の
+計算結果を変えないこと。データ構造の変更とバリデーションの追加が目的です。
+各Stepの完了時に、既存画面が壊れていないことを確認してから次に進んでください。
+
+---
+
+## Step 1: 標準報酬月額の履歴テーブル化
+
+現状: Employee に標準報酬月額が単一値で保持されている
+変更後:
+
+1. 新しい型 StandardRemunerationHistory を作成する
+   - id: string
+   - employeeId: string
+   - amount: number(標準報酬月額)
+   - effectiveFrom: string(効力開始年月 "YYYY-MM")
+   - effectiveTo: string | null(効力終了年月。null = 現在有効)
+2. Employee の標準報酬月額フィールドは削除し、履歴テーブル参照に置き換える
+3. 給与計算時は「計算対象月 >= effectiveFrom かつ (effectiveTo が null または
+   計算対象月 <= effectiveTo)」の1件を引く関数
+   getStandardRemuneration(employeeId, targetMonth) を payroll-core に追加
+4. 既存データのマイグレーション: 現在の単一値を
+   「effectiveFrom = 当月、effectiveTo = null」の1レコードとして移行する
+5. UI: 社員マスタ画面に履歴の一覧表示と「新しい期間を追加」を実装。
+   期間の重複はバリデーションエラーにする
+
+---
+
+## Step 2: 住民税の2値化+特別徴収対象外フラグ
+
+現状: Employee に住民税月額が単一値
+変更後:
+
+1. 新しい型 ResidentTaxHistory を作成する
+   - id: string
+   - employeeId: string
+   - fiscalYear: number(年度。6月開始)
+   - juneAmount: number(6月=初月の月額)
+   - regularAmount: number(7月以降の月額)
+2. Employee に specialCollectionExempt: boolean を追加
+   (true = 特別徴収対象外。金額0円とは意味が異なるため独立フラグとする)
+3. 給与計算時のロジック:
+   - specialCollectionExempt === true → 住民税控除なし(明細にも行を出さない)
+   - 対象月が6月 → juneAmount、7月〜翌5月 → regularAmount を控除
+4. 既存データのマイグレーション: 現在の単一月額を juneAmount と regularAmount の
+   両方に同額でコピーし、specialCollectionExempt = false とする
+5. UI: 社員マスタの住民税欄を「6月分」「7月以降」の2入力+対象外チェックボックスに変更
+
+---
+
+## Step 3: 契約・単価の履歴化と賃金形態の移動
+
+現状: 賃金形態(月給/日給/時給)が Employee 側にあり、単価は現在値のみ
+変更後:
+
+1. Contract を効力期間つき履歴として再定義する
+   - id: string
+   - employeeId: string
+   - workplaceId: string | null(null = 派遣先を特定しない基本契約)
+   - wageType: 'monthly' | 'daily' | 'hourly'(賃金形態。Employee から移動)
+   - wageAmount: number(単価)
+   - effectiveFrom: string("YYYY-MM-DD")
+   - effectiveTo: string | null
+2. Employee から賃金形態フィールドを削除する
+3. 給与計算時は打刻日付で有効な Contract を引く。同一従業員が
+   職場別に異なる契約を持てること(既存のヘルプ出勤対応を壊さない)
+4. 既存データのマイグレーション: 現在の Employee の賃金形態+単価を
+   「effectiveFrom = 入社日、effectiveTo = null」の Contract 1件に移行
+5. UI: 契約・単価の履歴一覧+期間追加。期間重複は同一 workplaceId 内でのみエラー
+
+---
+
+## Step 4: 社員マスタのフィールド追加と3区分バリデーション
+
+1. Employee に以下のフィールドを追加する:
+   - nameKana: string(カナ姓名)
+   - postalCode: string | null
+   - address: string | null
+   - phone: string | null
+   - employmentType: 'fulltime' | 'contract' | 'parttime'(雇用形態)
+   - taxTableType: 'kou' | 'otsu' | null(所得税区分。担当者が直接選択。
+     自動判定は実装しない)
+   - dependentCount: number | null(扶養親族数。配偶者含む)
+   - socialInsuranceEnrolled: boolean | null(社会保険 加入/非加入。null = 未設定)
+   - employmentInsuranceEnrolled: boolean | null(雇用保険 加入/非加入)
+   - basicPensionNumber: string | null(基礎年金番号)
+   - employmentInsuranceNumber: string | null(雇用保険被保険者番号)
+   - onParentalLeave: boolean(育休・産休中フラグ。デフォルト false)
+
+2. バリデーションを3区分で実装する:
+   - 登録時必須(保存時にエラー): 姓名、カナ姓名、生年月日、入社日、雇用形態
+   - 給与計算時必須(マスタ保存時は空を許容し、その従業員の給与計算実行時に
+     未設定ならエラーを出して計算をブロック):
+     taxTableType、dependentCount、socialInsuranceEnrolled、
+     employmentInsuranceEnrolled、有効な Contract(賃金形態+単価)、
+     socialInsuranceEnrolled === true の場合のみ標準報酬月額の有効レコード
+   - 任意: それ以外
+3. 給与計算時必須のエラーは「どの従業員の・どの項目が未設定か」を
+   一覧で表示すること(1件ずつではなくまとめて)
+4. onParentalLeave === true の従業員は健康保険料・介護保険料・厚生年金保険料・
+   子ども子育て支援金の控除を 0 にする(雇用保険・所得税・住民税は通常通り)
+
+---
+
+## Step 5: 確定スナップショットの拡充
+
+現状: 給与確定(ロック)時のスナップショットが合計値中心
+変更後: PayrollResult の確定時に以下を必ず個別保存する:
+
+1. 控除の内訳(健保・介護・厚年・雇用保険・支援金・所得税・住民税の各金額)
+2. 適用した料率(健保料率・介護料率・厚年料率・雇用保険料率・支援金率)
+3. 適用した税額表年度、taxTableType(甲/乙)、dependentCount
+4. socialInsuranceDeductedSalary: number(社会保険料控除後の給与額)
+5. withheldIncomeTax: number(その月の源泉徴収税額)
+   ※ 4と5は賞与計算が前月実績として参照するため必須
+6. 有給の月次推移: paidLeavePreviousBalance / paidLeaveUsedThisMonth /
+   paidLeaveCurrentBalance の3値
+7. 適用した標準報酬月額と、その履歴レコードのID
+
+確定済み PayrollResult は、マスタや料率をあとから変更しても
+一切再計算されないこと(既存のロック思想を維持)。
+確定画面・明細画面はスナップショットの値のみを表示し、
+マスタからの再計算値を表示しないこと。
+
+---
+
+## 全Step共通の注意
+
+- 型定義の変更は共有の型ファイルに集約し、UIコンポーネント内に
+  重複定義を作らないこと
+- マイグレーションは既存のテストデータが壊れない形で実装すること
+- 各Stepの最後に、変更内容のサマリと影響を受けた画面の一覧を報告すること

@@ -21,7 +21,12 @@ import {
   allowancesSum,
   nonTaxableAllowancesSum,
   normalizeAllowance,
+  StandardRemunerationHistory,
+  ResidentTaxHistory,
+  ContractMaster,
 } from "@/lib/dummy-data";
+import { AlertTriangle } from "lucide-react";
+import { validatePayrollRequirements } from "@/lib/payrollValidation";
 import { buildPayrollResultId, toYearMonth } from "@/lib/payrollCalc";
 import { computePayroll, DeductionBreakdown } from "@/lib/payroll-core";
 import {
@@ -39,6 +44,7 @@ import {
   computeWeekCarryIn,
 } from "@/lib/timeEngine";
 import { loadPrevMonthTimecardRows } from "@/lib/payrollInputs";
+import { resolveStandardRemuneration, resolveResidentTax } from "@/lib/employeeData";
 import {
   computeHoursByWorkplace,
   computeHourlyGross,
@@ -1479,7 +1485,9 @@ function ResultCard({
                 <DeductionRow label="厚生年金保険料" amount={deductions.pension} />
                 <DeductionRow label="労働保険" amount={deductions.labor} hint="雇用保険・従業員負担" />
                 <DeductionRow label="所得税" amount={deductions.incomeTax} />
-                <DeductionRow label="住民税" amount={deductions.residentTax} />
+                {!master?.specialCollectionExempt && (
+                  <DeductionRow label="住民税" amount={deductions.residentTax} />
+                )}
               </div>
               <p className="text-[10px] text-muted-foreground mt-2 px-1">
                 ※ 各項目は標準報酬月額・総支給額に基づくモックアップ計算です。
@@ -2040,6 +2048,9 @@ interface PayrollTabProps {
   onAddWorkplace: (key: string, def: WorkplaceDef) => void;
   onUpdateWorkplace: (id: string, def: WorkplaceDef) => void;
   employeeDB: Record<string, EmployeeMaster>;
+  contractDB: ContractMaster[];
+  stdRemHistoryDB: StandardRemunerationHistory[];
+  residentTaxDB: ResidentTaxHistory[];
   payrollResultDB: PayrollResult[];
   onLockOne: (result: PayrollResult) => void;
   onUnlockOne: (employeeId: string, targetYearMonth: string) => void;
@@ -2047,7 +2058,7 @@ interface PayrollTabProps {
 
 export function PayrollTab({
   currentDate, employeeId, employeeName, workplaces, onAddWorkplace, onUpdateWorkplace,
-  employeeDB, payrollResultDB, onLockOne, onUnlockOne,
+  employeeDB, contractDB, stdRemHistoryDB, residentTaxDB, payrollResultDB, onLockOne, onUnlockOne,
 }: PayrollTabProps) {
   const [ocrState, setOcrState] = useState<OcrState>("idle");
 
@@ -2619,6 +2630,7 @@ export function PayrollTab({
   }, [hoursByWorkplace, workplaces]);
 
   const handleLock = (deductions: DeductionBreakdown) => {
+    const lockStdRem = resolveStandardRemuneration(employeeId, yyyymm, stdRemHistoryDB);
     if (computation.taxError) {
       toast.error("所得税を計算できないため確定できません", {
         description: computation.taxError,
@@ -2644,6 +2656,15 @@ export function PayrollTab({
       deductions,
       allowances,
       taxSnapshot: computation.taxMeta,
+      appliedRates: computation.appliedRates,
+      socialInsuranceDeductedSalary: computation.socialInsuranceDeductedSalary,
+      withheldIncomeTax: computation.withheldIncomeTax,
+      // 有給管理機能は未導入のため、現時点では 0 をスナップショットする
+      paidLeavePreviousBalance: 0,
+      paidLeaveUsedThisMonth: 0,
+      paidLeaveCurrentBalance: 0,
+      appliedStandardRemuneration: lockStdRem.amount,
+      appliedStdRemHistoryId: lockStdRem.historyId,
     };
     onLockOne(result);
     toast.success(`${monthLabel(currentDate)} の給与を確定しました`, {
@@ -2670,23 +2691,54 @@ export function PayrollTab({
       nonTaxableAllowanceTotal,
       employee: master
         ? {
-            isSocialInsurance: master.isSocialInsurance,
-            standardRemuneration: master.standardRemuneration,
+            isSocialInsurance: master.isSocialInsurance ?? false,
+            standardRemuneration: resolveStandardRemuneration(employeeId, yyyymm, stdRemHistoryDB).amount,
             birthDate: master.birthDate,
-            residentTax: master.residentTax,
-            taxCategory: master.taxCategory,
+            residentTax: resolveResidentTax(employeeId, yyyymm, master.specialCollectionExempt, residentTaxDB).amount,
+            taxCategory: master.taxCategory ?? "甲欄",
+            onParentalLeave: master.onParentalLeave,
           }
         : undefined,
     }),
-    [grossAmount, master, yyyymm, primaryPrefecture, nonTaxableAllowanceTotal],
+    [grossAmount, master, yyyymm, primaryPrefecture, nonTaxableAllowanceTotal, employeeId, stdRemHistoryDB, residentTaxDB],
   );
-  const deductions: DeductionBreakdown = computation.deductions;
-  const netPay = computation.netPay;
+  // ロック済み月はスナップショットの控除内訳を表示し、確定後のマスタ・料率変更で
+  // 表示が変わらないようにする（再計算値は未確定時のみ使用）。
+  const deductions: DeductionBreakdown =
+    lockedSnapshot?.deductions ?? computation.deductions;
+  const netPay = lockedSnapshot
+    ? lockedSnapshot.netPay
+    : computation.netPay;
 
   const [shareModalOpen, setShareModalOpen] = useState(false);
 
+  // 給与計算時必須バリデーション（この従業員分のみ）
+  const requirementIssue = useMemo(() => {
+    const issues = validatePayrollRequirements({
+      targetYearMonth: yyyymm,
+      employees: [{ id: employeeId, name: employeeName }],
+      employeeDB,
+      contractDB,
+      stdRemHistoryDB,
+    });
+    return issues[0] ?? null;
+  }, [yyyymm, employeeId, employeeName, employeeDB, contractDB, stdRemHistoryDB]);
+
   return (
     <div className="space-y-6 max-w-3xl">
+      {requirementIssue && (
+        <div
+          className="flex items-start gap-2 text-xs text-red-800 bg-red-50 border border-red-200 rounded-xl p-3"
+          data-testid="requirement-issue-banner"
+        >
+          <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5 text-red-600" />
+          <p>
+            <span className="font-semibold">マスタに未設定の項目があります: </span>
+            {requirementIssue.missingItems.join("、")}
+            （従業員情報タブで設定するまで給与確定はできません）
+          </p>
+        </div>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center">
@@ -2770,7 +2822,7 @@ export function PayrollTab({
       </fieldset>
 
       <ResultCard
-        grossAmount={grossAmount}
+        grossAmount={lockedSnapshot ? lockedSnapshot.totalPayment : grossAmount}
         baseAmount={payType === "monthly" ? monthlyRaw : payType === "daily" ? dailyGross : hourlyGross}
         allowancesTotal={allowancesTotal}
         payType={payType}

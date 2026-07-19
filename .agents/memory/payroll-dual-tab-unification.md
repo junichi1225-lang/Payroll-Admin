@@ -44,3 +44,13 @@ Run: `node scripts/acceptance.mjs` from the payroll-app dir.
 `{amount, taxable}` flag model is gone). `normalizeAllowance` migrates legacy records (taxable flag,
 else 通勤-name heuristic — migration only). Use `allowancesSum` / `nonTaxableAllowancesSum` /
 `allowanceTotal` helpers; never sum `.amount` directly.
+
+## Locked-month display is snapshot-only
+Once a month is locked, ALL confirmed views (simulator ResultCard, finalization rows,
+payslip PDF fields incl. resident-tax row visibility) must read from the stored
+`PayrollResult` snapshot, never from live recomputation — otherwise post-lock master/rate
+changes silently change confirmed numbers. New snapshot fields (appliedRates,
+socialInsuranceDeductedSalary, withheldIncomeTax, appliedStandardRemuneration/HistoryId,
+paidLeave 0/0/0 placeholders) are optional on `PayrollResult` for legacy data; when adding
+computation outputs, propagate through PayrollComputation → MonthComputation (payrollInputs)
+→ PayrollSummary (payrollCalc) → all 3 lock sites, or finalization silently drops them.

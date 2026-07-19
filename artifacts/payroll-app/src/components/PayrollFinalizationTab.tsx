@@ -15,13 +15,16 @@ import { toast } from "sonner";
 import {
   DEFAULT_TENANT_ID,
   DEFAULT_TENANT_NAME,
+  ContractMaster,
   EmployeeMaster,
   EmployeeRecord,
   PayrollResult,
+  StandardRemunerationHistory,
   WorkplaceDef,
   allowanceTotal,
   normalizeAllowance,
 } from "@/lib/dummy-data";
+import { validatePayrollRequirements } from "@/lib/payrollValidation";
 import {
   buildPayrollResultId,
   computeMonthSummary,
@@ -48,6 +51,8 @@ interface PayrollFinalizationTabProps {
   employeeDB: Record<string, EmployeeMaster>;
   workplaces: Record<string, WorkplaceDef>;
   payrollResultDB: PayrollResult[];
+  contractDB: ContractMaster[];
+  stdRemHistoryDB: StandardRemunerationHistory[];
   onLockOne: (result: PayrollResult) => void;
   onUnlockOne: (employeeId: string, targetYearMonth: string) => void;
   onLockAll: (results: PayrollResult[]) => void;
@@ -61,6 +66,8 @@ export function PayrollFinalizationTab({
   employeeDB,
   workplaces,
   payrollResultDB,
+  contractDB,
+  stdRemHistoryDB,
   onLockOne,
   onUnlockOne,
   onLockAll,
@@ -109,7 +116,27 @@ export function PayrollFinalizationTab({
   const draftRows = rows.filter((r) => !r.isLocked);
   const lockedCount = rows.length - draftRows.length;
 
+  // 給与計算時必須バリデーション: 未設定項目のある従業員は確定をブロックする
+  const requirementIssues = useMemo(
+    () =>
+      validatePayrollRequirements({
+        targetYearMonth: yyyymm,
+        employees: employees.map((e) => ({ id: e.id, name: e.name })),
+        employeeDB,
+        contractDB,
+        stdRemHistoryDB,
+      }),
+    [yyyymm, employees, employeeDB, contractDB, stdRemHistoryDB],
+  );
+
   const handleLockRow = (emp: EmployeeRecord) => {
+    const issue = requirementIssues.find((i) => i.employeeId === emp.id);
+    if (issue) {
+      toast.error(`${emp.name} のマスタに未設定項目があるため確定できません`, {
+        description: issue.missingItems.join("、"),
+      });
+      return;
+    }
     const live = computeMonthSummary(emp.id, year, month, employeeDB, workplaces);
     if (live.taxError) {
       toast.error(`${emp.name} の所得税を計算できないため確定できません`, {
@@ -133,11 +160,31 @@ export function PayrollFinalizationTab({
       deductions: live.deductions,
       allowances: live.allowances,
       taxSnapshot: live.taxMeta,
+      appliedRates: live.appliedRates,
+      socialInsuranceDeductedSalary: live.socialInsuranceDeductedSalary,
+      withheldIncomeTax: live.withheldIncomeTax,
+      // 有給管理機能は未導入のため、現時点では 0 をスナップショットする
+      paidLeavePreviousBalance: 0,
+      paidLeaveUsedThisMonth: 0,
+      paidLeaveCurrentBalance: 0,
+      appliedStandardRemuneration: live.appliedStandardRemuneration,
+      appliedStdRemHistoryId: live.appliedStdRemHistoryId,
     };
     onLockOne(result);
   };
 
   const handleLockAll = () => {
+    const draftIssues = requirementIssues.filter((i) =>
+      draftRows.some((r) => r.emp.id === i.employeeId),
+    );
+    if (draftIssues.length > 0) {
+      toast.error("マスタに未設定項目がある従業員がいるため一括確定できません", {
+        description: draftIssues
+          .map((i) => `${i.employeeName}: ${i.missingItems.join("、")}`)
+          .join(" / "),
+      });
+      return;
+    }
     const computed = draftRows.map((r) => ({
       r,
       live: computeMonthSummary(r.emp.id, year, month, employeeDB, workplaces),
@@ -166,6 +213,15 @@ export function PayrollFinalizationTab({
         deductions: live.deductions,
         allowances: live.allowances,
         taxSnapshot: live.taxMeta,
+        appliedRates: live.appliedRates,
+        socialInsuranceDeductedSalary: live.socialInsuranceDeductedSalary,
+        withheldIncomeTax: live.withheldIncomeTax,
+        // 有給管理機能は未導入のため、現時点では 0 をスナップショットする
+        paidLeavePreviousBalance: 0,
+        paidLeaveUsedThisMonth: 0,
+        paidLeaveCurrentBalance: 0,
+        appliedStandardRemuneration: live.appliedStandardRemuneration,
+        appliedStdRemHistoryId: live.appliedStdRemHistoryId,
       };
     });
     if (newResults.length > 0) onLockAll(newResults);
@@ -245,6 +301,10 @@ export function PayrollFinalizationTab({
             totalPayment: snap.totalPayment,
             deductions,
             netPay: snap.netPay,
+            // ロック済みはスナップショットの控除実績から判定し、現マスタ変更の影響を受けない
+            specialCollectionExempt: r.isLocked
+              ? (r.snapshot.deductions?.residentTax ?? 0) <= 0
+              : (employeeDB[r.emp.id]?.specialCollectionExempt ?? false),
           };
         });
       await generatePayslipPDF({
@@ -339,6 +399,24 @@ export function PayrollFinalizationTab({
           以降にマスタ（時給等）を変更しても、この画面の確定済み行の金額は変動しません。
         </p>
       </div>
+
+      {/* 未設定項目バナー（給与計算時必須バリデーション） */}
+      {requirementIssues.length > 0 && (
+        <div
+          className="flex items-start gap-2 text-xs text-red-800 bg-red-50 border border-red-200 rounded-xl p-3"
+          data-testid="requirement-issues-banner"
+        >
+          <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5 text-red-600" />
+          <div className="space-y-1">
+            <p className="font-semibold">マスタに未設定項目がある従業員がいます（確定できません）</p>
+            {requirementIssues.map((i) => (
+              <p key={i.employeeId}>
+                {i.employeeName}: {i.missingItems.join("、")}
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* 全員確定バナー */}
       {allLocked && (

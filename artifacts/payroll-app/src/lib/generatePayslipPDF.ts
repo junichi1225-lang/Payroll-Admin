@@ -33,6 +33,8 @@ export interface PayslipEmployeeData {
   };
   /** 差引支給額 */
   netPay: number;
+  /** 特別徴収対象外（true の場合、明細に住民税行を出さない） */
+  specialCollectionExempt?: boolean;
 }
 
 export interface GeneratePayslipPDFInput {
@@ -81,7 +83,7 @@ function deductionRows(emp: PayslipEmployeeData): string {
     ["子ども・子育て拠出金", d.childcare],
     ["雇用保険料", d.labor],
     ["所得税", d.incomeTax],
-    ["住民税", d.residentTax],
+    ...(emp.specialCollectionExempt ? [] : [["住民税", d.residentTax] as [string, number]]),
   ];
   return items
     .map(
